@@ -129,7 +129,10 @@ def reset_error_context():
     _LAST_EXCEPTION = None
 
 def log_error(message: str, exc: Exception | str | None = None):
-    """Affiche une erreur et la mémorise pour le journal (concaténation)."""
+    """Affiche une erreur et la mémorise pour le journal (concaténation).
+    - error_messages : concatène les messages
+    - exception : stocke la *première* exception détaillée (traceback si possible)
+    """
     global _LAST_ERRORS, _LAST_EXCEPTION
     print(message)
     try:
@@ -138,11 +141,19 @@ def log_error(message: str, exc: Exception | str | None = None):
             _LAST_ERRORS.append(msg)
     except Exception:
         pass
+
     if exc is not None and _LAST_EXCEPTION is None:
         try:
-            _LAST_EXCEPTION = str(exc)
+            import traceback as _tb
+            if isinstance(exc, BaseException):
+                _LAST_EXCEPTION = ''.join(_tb.format_exception(type(exc), exc, exc.__traceback__)).strip()
+            else:
+                _LAST_EXCEPTION = str(exc).strip()
         except Exception:
-            _LAST_EXCEPTION = None
+            try:
+                _LAST_EXCEPTION = str(exc)
+            except Exception:
+                _LAST_EXCEPTION = None
 
 def init_journal(dossier_base: Path, nom_prefixe: str = "conversion_log"):
     """Initialise un journal CSV dans dossier_base."""
@@ -610,7 +621,7 @@ def convertir_msg_vers_pdf(chemin_source, chemin_pdf):
                 pythoncom.CoUninitialize()
             except Exception:
                 pass
-            print(f"  ⚠ Erreur MSG via Outlook: {e}")
+            log_error(f"  ⚠ Erreur MSG via Outlook: {e}", e)
             # On tombe sur fallback
 
     # 2) Fallback: extraire en texte simple
@@ -634,7 +645,7 @@ def convertir_msg_vers_pdf(chemin_source, chemin_pdf):
             return False
 
     except Exception as e:
-        print(f"  ⚠ Erreur MSG fallback: {e}")
+        log_error(f"  ⚠ Erreur MSG fallback: {e}", e)
         return False
 
 
@@ -805,7 +816,7 @@ def convertir_avec_office(chemin_source, chemin_pdf):
                 presentation.Close()
                 succes = True
             except Exception as e:
-                print(f"  ⚠ Erreur Office PowerPoint: {e}")
+                log_error(f"  ⚠ Erreur Office PowerPoint: {e}", e)
                 succes = False
             finally:
                 powerpoint.Quit()
@@ -817,7 +828,7 @@ def convertir_avec_office(chemin_source, chemin_pdf):
         return succes
         
     except Exception as e:
-        print(f"  ⚠ Erreur COM générale: {e}")
+        log_error(f"  ⚠ Erreur COM générale: {e}", e)
         try:
             pythoncom.CoUninitialize()
         except:
@@ -914,7 +925,7 @@ def convertir_jpg_vers_pdf(chemin_jpg, chemin_pdf):
             img.save(chemin_pdf, "PDF", resolution=100.0, quality=95)
         return True
     except Exception as e:
-        print(f"  ⚠ Erreur conversion image: {e}")
+        log_error(f"  ⚠ Erreur conversion image: {e}", e)
         return False
 
 def convertir_xml_vers_pdf(chemin_xml, chemin_pdf):
@@ -975,7 +986,7 @@ def convertir_xml_vers_pdf(chemin_xml, chemin_pdf):
         return True
         
     except Exception as e:
-        print(f"  ⚠ Erreur conversion XML: {e}")
+        log_error(f"  ⚠ Erreur conversion XML: {e}", e)
         return False
 
 def convertir_word_vers_pdf_reportlab(chemin_word, chemin_pdf):
@@ -1355,7 +1366,7 @@ def convertir_fichier_intelligent(chemin_source, chemin_pdf, methode_forcee=None
             shutil.copy2(str(chemin_source), str(chemin_pdf))
             return True
         except Exception as e:
-            print(f"  ⚠ Erreur copie PDF: {e}")
+            log_error(f"  ⚠ Erreur copie PDF: {e}", e)
             return False
 
     # Texte brut
@@ -1543,7 +1554,11 @@ def convertir_fichier(chemin_source, repertoire_sortie=None, conserver_original=
     
     reset_error_context()
     debut = time.time()
-    resultat_conv = convertir_fichier_intelligent(chemin_source, chemin_pdf)
+    try:
+        resultat_conv = convertir_fichier_intelligent(chemin_source, chemin_pdf)
+    except Exception as e_unhandled:
+        log_error(f"  ❌ Exception non gérée pendant la conversion: {e_unhandled}", e_unhandled)
+        resultat_conv = False
     duree = time.time() - debut
     
     if resultat_conv is True:
@@ -1572,8 +1587,8 @@ def convertir_fichier(chemin_source, repertoire_sortie=None, conserver_original=
         return 'skipped'
 
     else:
-        print(f"  ❌ Échec de conversion")
-        journaliser('failed', chemin_source, chemin_pdf, duree, 'échec conversion', error_messages=' | '.join(_LAST_ERRORS), exception=_LAST_EXCEPTION)
+        log_error(f"  ❌ Échec de conversion")
+        journaliser('failed', chemin_source, chemin_pdf, duree, ('échec conversion' + (': ' + _LAST_ERRORS[0] if _LAST_ERRORS else '')), error_messages=' | '.join(_LAST_ERRORS), exception=_LAST_EXCEPTION)
         return 'failed'
 
 def traiter_repertoire(repertoire, recursif=False, repertoire_sortie=None, 
