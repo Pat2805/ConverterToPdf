@@ -763,15 +763,16 @@ def convertir_avec_office(chemin_source, chemin_pdf):
             doc = None
             try:
                 # Ouverture en lecture seule, sans ajouts "fichiers récents", sans dialogues
-                doc = word.Documents.Open(
+                doc = doc = word.Documents.Open(
                     chemin_source_abs,
                     ReadOnly=True,
                     AddToRecentFiles=False,
                     ConfirmConversions=False,
                     NoEncodingDialog=True,
-                    PasswordDocument="",
-                    WritePasswordDocument="",
-                    Revert=False
+                    PasswordDocument="__INVALID__",
+                    WritePasswordDocument="__INVALID__",
+                    Revert=False,
+                    Visible=False
                 )
 # Export PDF : ExportAsFixedFormat est généralement le plus robuste
                 # 17 = wdExportFormatPDF
