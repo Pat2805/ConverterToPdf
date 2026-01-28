@@ -599,95 +599,108 @@ def convertir_texte_vers_pdf(chemin_source, chemin_pdf, titre=None):
 def convertir_msg_vers_pdf(chemin_source, chemin_pdf):
     """
     Convertit un .msg en PDF.
-    - Windows recommandé: Outlook via COM -> export HTML -> HTML->PDF (Chrome/Edge headless)
-    - Fallback: extraction basique si possible.
+
+    Stratégie (robuste, sans popups) :
+    1) extract_msg (si installé) : ne dépend pas d'Outlook/COM -> recommandé en batch
+    2) Outlook COM (si disponible) : export HTML -> HTML->PDF
+
+    Notes:
+    - Si Outlook n'est pas installé / COM non enregistré (erreur "Chaîne de classe incorrecte"),
+      on loggue un message explicite et on recommande l'installation/réparation d'Outlook ou l'usage de extract_msg.
     """
     extension = Path(chemin_source).suffix.lower()
     if extension != ".msg":
         return False
 
-    # 1) Outlook COM si possible
-    if WIN32COM_AVAILABLE and platform.system() == "Windows":
-        try:
-            pythoncom.CoInitialize()
-            outlook = win32com.client.Dispatch("Outlook.Application")
-            session = outlook.Session
-
-            # OpenSharedItem est le plus fiable pour .msg
-            item = None
-            try:
-                item = session.OpenSharedItem(str(Path(chemin_source).absolute()))
-            except Exception:
-                try:
-                    item = outlook.CreateItemFromTemplate(str(Path(chemin_source).absolute()))
-                except Exception:
-                    item = None
-
-            if item is None:
-                raise RuntimeError("Impossible d'ouvrir le .msg via Outlook.")
-
-            tmp_html = Path(chemin_pdf).with_suffix(".tmp.html")
-            # olHTML = 5
-            item.SaveAs(str(tmp_html), 5)
-
-            # Convertir HTML -> PDF
-            ok = convertir_html_vers_pdf(tmp_html, chemin_pdf)
-
-            try:
-                tmp_html.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
-
-            return ok
-
-        except Exception as e:
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
-            log_error(f"  ⚠ Erreur MSG via Outlook: {e}", e)
-            # On tombe sur fallback
-
-    # 2) Fallback: extraire en texte simple
+    # 1) Option préférée: extract_msg (ne dépend pas d'Outlook)
     try:
-        # Tentative d'utiliser extract_msg si installé
+        import extract_msg  # type: ignore
         try:
-            import extract_msg  # type: ignore
             msg = extract_msg.Message(str(chemin_source))
             msg.process()
-            texte = f"Subject: {msg.subject}\nFrom: {msg.sender}\nTo: {msg.to}\nDate: {msg.date}\n\n{msg.body or ''}"
+
+            texte = (
+                f"Subject: {getattr(msg, 'subject', '')}\n"
+                f"From: {getattr(msg, 'sender', '')}\n"
+                f"To: {getattr(msg, 'to', '')}\n"
+                f"Date: {getattr(msg, 'date', '')}\n\n"
+                f"{getattr(msg, 'body', '') or ''}"
+            )
+
             tmp_txt = Path(chemin_pdf).with_suffix(".tmp.txt")
             tmp_txt.write_text(texte, encoding="utf-8", errors="replace")
+
             ok = convertir_texte_vers_pdf(tmp_txt, chemin_pdf, titre=Path(chemin_source).name)
+
             try:
                 tmp_txt.unlink(missing_ok=True)
             except Exception:
                 pass
-            return ok
-        except ImportError:
-            print("  ❌ Ni Outlook COM ni extract_msg disponible pour convertir .msg.")
-            return False
 
-    except Exception as e:
-        log_error(f"  ⚠ Erreur MSG fallback: {e}", e)
+            if ok:
+                globals()['_LAST_METHOD_USED'] = "extract_msg"
+                return True
+
+            log_error("  ⚠ MSG: extract_msg a échoué à produire un PDF", None)
+        except Exception as e_extract:
+            log_error(f"  ⚠ Erreur MSG via extract_msg: {e_extract}", e_extract)
+            # On tente Outlook COM ensuite (si disponible)
+    except ImportError:
+        log_info("MSG: extract_msg non installé -> tentative via Outlook COM")
+
+    # 2) Outlook COM (Windows + pywin32 + Outlook installé)
+    if not (WIN32COM_AVAILABLE and platform.system() == "Windows"):
+        log_error("  ❌ MSG: Outlook COM indisponible (pywin32 absent ou OS non Windows).", None)
+        log_error("  💡 Installez 'extract_msg' (pip install extract_msg) pour convertir .msg sans Outlook.", None)
         return False
 
-
-def log_info(message: str):
-    """Affiche une info et la mémorise pour le journal (concaténation)."""
-    global _LAST_INFOS
-    print(message)
     try:
-        msg = str(message).strip()
-        if msg:
-            _LAST_INFOS.append(msg)
-    except Exception:
-        pass
+        pythoncom.CoInitialize()
+
+        # DispatchEx évite de se raccrocher à une instance existante
+        try:
+            outlook = win32com.client.DispatchEx("Outlook.Application")
+        except Exception as e_disp:
+            log_error(f"  ⚠ Erreur MSG via Outlook (Dispatch): {e_disp}", e_disp)
+            log_error("  💡 Causes fréquentes: Outlook non installé, Office/Outlook à réparer, ou mismatch 32-bit Outlook vs Python 64-bit.", None)
+            log_error("  💡 Solution recommandée: installer/activer Outlook desktop OU utiliser 'extract_msg' (pip install extract_msg).", None)
+            return False
+
+        session = outlook.Session
+
+        item = None
+        try:
+            item = session.OpenSharedItem(str(Path(chemin_source).absolute()))
+        except Exception:
+            try:
+                item = outlook.CreateItemFromTemplate(str(Path(chemin_source).absolute()))
+            except Exception:
+                item = None
+
+        if item is None:
+            raise RuntimeError("Impossible d'ouvrir le .msg via Outlook COM.")
+
+        tmp_html = Path(chemin_pdf).with_suffix(".tmp.html")
+        item.SaveAs(str(tmp_html), 5)  # olHTML=5
+
+        ok = convertir_html_vers_pdf(tmp_html, chemin_pdf)
+
+        try:
+            tmp_html.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        globals()['_LAST_METHOD_USED'] = "outlook_com"
+        return bool(ok)
+
+    except Exception as e:
+        log_error(f"  ⚠ Erreur MSG via Outlook: {e}", e)
+        return False
+    finally:
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
 
 
 def is_password_error(err: Exception | str) -> bool:
