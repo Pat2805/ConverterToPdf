@@ -134,6 +134,18 @@ def reset_error_context():
     _LAST_INFOS = []
     _LAST_METHOD_USED = None
 
+
+def log_info(message: str):
+    """Affiche une info et la mémorise pour le journal (concaténation)."""
+    global _LAST_INFOS
+    try:
+        msg = str(message).strip()
+        if msg:
+            _LAST_INFOS.append(msg)
+    except Exception:
+        pass
+    print(message)
+
 def log_error(message: str, exc: Exception | str | None = None):
     """Affiche une erreur et la mémorise pour le journal (concaténation).
     - error_messages : concatène les messages
@@ -617,7 +629,8 @@ def convertir_msg_vers_pdf(chemin_source, chemin_pdf):
         import extract_msg  # type: ignore
         try:
             msg = extract_msg.Message(str(chemin_source))
-            msg.process()
+            if hasattr(msg, 'process'):
+                msg.process()
 
             texte = (
                 f"Subject: {getattr(msg, 'subject', '')}\n"
@@ -631,6 +644,12 @@ def convertir_msg_vers_pdf(chemin_source, chemin_pdf):
             tmp_txt.write_text(texte, encoding="utf-8", errors="replace")
 
             ok = convertir_texte_vers_pdf(tmp_txt, chemin_pdf, titre=Path(chemin_source).name)
+
+            try:
+                if hasattr(msg, 'close'):
+                    msg.close()
+            except Exception:
+                pass
 
             try:
                 tmp_txt.unlink(missing_ok=True)
