@@ -612,77 +612,157 @@ def convertir_msg_vers_pdf(chemin_source, chemin_pdf):
     """
     Convertit un .msg en PDF.
 
-    Stratégie (robuste, sans popups) :
-    1) extract_msg (si installé) : ne dépend pas d'Outlook/COM -> recommandé en batch
-    2) Outlook COM (si disponible) : export HTML -> HTML->PDF
+    Objectif: éviter les dépendances Outlook/COM (fragiles) et éviter toute troncature.
+    Stratégie:
+      1) extract_msg (si installé) :
+         - si HTML dispo -> HTML->PDF (Chrome/Edge headless) pour un rendu fidèle
+         - sinon -> texte->PDF (ReportLab) avec pagination
+         - ajoute une section "Attachments" (noms) si disponible
+      2) Outlook COM en dernier recours (Windows + Outlook correctement enregistré)
 
-    Notes:
-    - Si Outlook n'est pas installé / COM non enregistré (erreur "Chaîne de classe incorrecte"),
-      on loggue un message explicite et on recommande l'installation/réparation d'Outlook ou l'usage de extract_msg.
+    Remarque: si Outlook COM renvoie (-2147221005, "Chaîne de classe incorrecte"),
+    c'est généralement Outlook non installé / COM cassé / mismatch 32/64 bits.
     """
     extension = Path(chemin_source).suffix.lower()
     if extension != ".msg":
         return False
 
-    # 1) Option préférée: extract_msg (ne dépend pas d'Outlook)
+    # ---------
+    # 1) extract_msg (recommandé)
+    # ---------
     try:
         import extract_msg  # type: ignore
+
         try:
             msg = extract_msg.Message(str(chemin_source))
-            if hasattr(msg, 'process'):
-                msg.process()
 
+            # Certaines versions ont process(), d'autres non
+            try:
+                if hasattr(msg, "process"):
+                    msg.process()
+            except Exception as e_proc:
+                log_error(f"  ⚠ MSG: extract_msg.process() a échoué: {e_proc}", e_proc)
+
+            subject = getattr(msg, "subject", "") or ""
+            sender = getattr(msg, "sender", "") or ""
+            to = getattr(msg, "to", "") or ""
+            date = getattr(msg, "date", "") or ""
+
+            # Pièces jointes (si dispo)
+            attachments_lines = []
+            try:
+                atts = getattr(msg, "attachments", None)
+                if atts:
+                    for a in atts:
+                        fn = getattr(a, "longFilename", None) or getattr(a, "filename", None) or getattr(a, "shortFilename", None) or ""
+                        if fn:
+                            attachments_lines.append(f"- {fn}")
+            except Exception:
+                pass
+
+            attachments_block = ""
+            if attachments_lines:
+                attachments_block = "\n\nAttachments:\n" + "\n".join(attachments_lines) + "\n"
+
+            # 1.a) HTML si disponible (le plus fiable pour éviter les pertes / mise en page)
+            html_body = (
+                getattr(msg, "htmlBody", None)
+                or getattr(msg, "html", None)
+                or getattr(msg, "bodyHtml", None)
+            )
+
+            if html_body and isinstance(html_body, str) and html_body.strip():
+                tmp_html = Path(chemin_pdf).with_suffix(".tmp.html")
+                # S'assurer d'un charset correct
+                html_doc = (
+                    "<!doctype html><html><head><meta charset='utf-8'></head><body>"
+                    f"<h3>{Path(chemin_source).name}</h3>"
+                    "<div><b>Subject:</b> " + str(subject) + "</div>"
+                    "<div><b>From:</b> " + str(sender) + "</div>"
+                    "<div><b>To:</b> " + str(to) + "</div>"
+                    "<div><b>Date:</b> " + str(date) + "</div>"
+                    "<hr/>"
+                    + html_body +
+                    ("<hr/><pre>" + attachments_block.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;") + "</pre>" if attachments_block else "") +
+                    "</body></html>"
+                )
+                tmp_html.write_text(html_doc, encoding="utf-8", errors="replace")
+                ok = convertir_html_vers_pdf(tmp_html, chemin_pdf)
+
+                try:
+                    tmp_html.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+                try:
+                    if hasattr(msg, "close"):
+                        msg.close()
+                except Exception:
+                    pass
+
+                if ok:
+                    globals()['_LAST_METHOD_USED'] = "extract_msg_html"
+                    return True
+
+                log_error("  ⚠ MSG: HTML->PDF a échoué, fallback texte...", None)
+
+            # 1.b) Fallback texte
+            body = getattr(msg, "body", "") or ""
             texte = (
-                f"Subject: {getattr(msg, 'subject', '')}\n"
-                f"From: {getattr(msg, 'sender', '')}\n"
-                f"To: {getattr(msg, 'to', '')}\n"
-                f"Date: {getattr(msg, 'date', '')}\n\n"
-                f"{getattr(msg, 'body', '') or ''}"
+                f"{Path(chemin_source).name}\n"
+                f"Subject: {subject}\n"
+                f"From: {sender}\n"
+                f"To: {to}\n"
+                f"Date: {date}\n\n"
+                f"{body}"
+                f"{attachments_block}"
             )
 
             tmp_txt = Path(chemin_pdf).with_suffix(".tmp.txt")
             tmp_txt.write_text(texte, encoding="utf-8", errors="replace")
-
             ok = convertir_texte_vers_pdf(tmp_txt, chemin_pdf, titre=Path(chemin_source).name)
-
-            try:
-                if hasattr(msg, 'close'):
-                    msg.close()
-            except Exception:
-                pass
 
             try:
                 tmp_txt.unlink(missing_ok=True)
             except Exception:
                 pass
 
+            try:
+                if hasattr(msg, "close"):
+                    msg.close()
+            except Exception:
+                pass
+
             if ok:
-                globals()['_LAST_METHOD_USED'] = "extract_msg"
+                globals()['_LAST_METHOD_USED'] = "extract_msg_text"
                 return True
 
-            log_error("  ⚠ MSG: extract_msg a échoué à produire un PDF", None)
+            log_error("  ❌ MSG: extract_msg n'a pas permis de produire un PDF.", None)
+
         except Exception as e_extract:
             log_error(f"  ⚠ Erreur MSG via extract_msg: {e_extract}", e_extract)
-            # On tente Outlook COM ensuite (si disponible)
-    except ImportError:
-        log_info("MSG: extract_msg non installé -> tentative via Outlook COM")
 
-    # 2) Outlook COM (Windows + pywin32 + Outlook installé)
+    except ImportError:
+        log_info("MSG: extract_msg non installé -> tentative via Outlook COM (dernier recours)")
+
+    # ---------
+    # 2) Outlook COM (dernier recours)
+    # ---------
     if not (WIN32COM_AVAILABLE and platform.system() == "Windows"):
         log_error("  ❌ MSG: Outlook COM indisponible (pywin32 absent ou OS non Windows).", None)
-        log_error("  💡 Installez 'extract_msg' (pip install extract_msg) pour convertir .msg sans Outlook.", None)
+        log_error("  💡 Recommandé: pip install extract_msg", None)
         return False
 
     try:
         pythoncom.CoInitialize()
 
-        # DispatchEx évite de se raccrocher à une instance existante
         try:
             outlook = win32com.client.DispatchEx("Outlook.Application")
         except Exception as e_disp:
             log_error(f"  ⚠ Erreur MSG via Outlook (Dispatch): {e_disp}", e_disp)
-            log_error("  💡 Causes fréquentes: Outlook non installé, Office/Outlook à réparer, ou mismatch 32-bit Outlook vs Python 64-bit.", None)
-            log_error("  💡 Solution recommandée: installer/activer Outlook desktop OU utiliser 'extract_msg' (pip install extract_msg).", None)
+            log_error("  💡 Causes fréquentes: Outlook non installé, Office/Outlook à réparer, ou mismatch 32/64-bit.", None)
+            log_errorSLGG = "  💡 Recommandé: pip install extract_msg (conversion .msg sans Outlook)."
+            log_error(Ra := "  💡 Recommandé: pip install extract_msg (conversion .msg sans Outlook).", None)
             return False
 
         session = outlook.Session
@@ -720,6 +800,7 @@ def convertir_msg_vers_pdf(chemin_source, chemin_pdf):
             pythoncom.CoUninitialize()
         except Exception:
             pass
+
 
 
 def is_password_error(err: Exception | str) -> bool:
