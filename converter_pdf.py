@@ -768,10 +768,12 @@ def convertir_avec_office(chemin_source, chemin_pdf):
                     ReadOnly=True,
                     AddToRecentFiles=False,
                     ConfirmConversions=False,
-                    NoEncodingDialog=True
+                    NoEncodingDialog=True,
+                    PasswordDocument="",
+                    WritePasswordDocument="",
+                    Revert=False
                 )
-                
-                # Export PDF : ExportAsFixedFormat est généralement le plus robuste
+# Export PDF : ExportAsFixedFormat est généralement le plus robuste
                 # 17 = wdExportFormatPDF
                 try:
                     doc.ExportAsFixedFormat(
@@ -827,9 +829,21 @@ def convertir_avec_office(chemin_source, chemin_pdf):
             excel = win32com.client.Dispatch("Excel.Application")
             excel.Visible = False
             excel.DisplayAlerts = False
+            try:
+                excel.AskToUpdateLinks = False
+            except Exception:
+                pass
             
             try:
-                wb = excel.Workbooks.Open(chemin_source_abs, ReadOnly=True, UpdateLinks=0)
+                wb = excel.Workbooks.Open(
+                chemin_source_abs,
+                ReadOnly=True,
+                UpdateLinks=0,
+                Password="",
+                WriteResPassword="",
+                IgnoreReadOnlyRecommended=True,
+                AddToMru=False
+            )
                 # Type PDF = 0
                 wb.ExportAsFixedFormat(0, chemin_pdf_abs)
                 wb.Close(False)
@@ -1888,9 +1902,7 @@ def main():
             print("   • Tesseract + pip install pytesseract")
             print("   • Ou: pip install easyocr")
             print("   • Ou: pip install paddleocr")
-            reponse = input("\nContinuer sans OCR? (o/N): ")
-            if reponse.lower() != 'o':
-                sys.exit(1)
+            # Aucun moteur OCR disponible: on continue automatiquement sans OCR (mode batch)
             UTILISER_OCR = False
         else:
             print(f"🔤 OCR activé (moteur: {MOTEUR_OCR})")
