@@ -120,13 +120,17 @@ _JOURNAL_WRITER = None
 
 # Contexte d'erreur (par fichier) pour enrichir le journal CSV
 _LAST_ERRORS: list[str] = []
+_LAST_INFOS: list[str] = []
+_LAST_METHOD_USED: str | None = None
 _LAST_EXCEPTION: str | None = None
 
 def reset_error_context():
-    """Réinitialise le buffer d'erreurs pour le fichier en cours."""
-    global _LAST_ERRORS, _LAST_EXCEPTION
+    """Réinitialise les buffers (erreurs + infos) pour le fichier en cours."""
+    global _LAST_ERRORS, _LAST_EXCEPTION, _LAST_INFOS, _LAST_METHOD_USED
     _LAST_ERRORS = []
     _LAST_EXCEPTION = None
+    _LAST_INFOS = []
+    _LAST_METHOD_USED = None
 
 def log_error(message: str, exc: Exception | str | None = None):
     """Affiche une erreur et la mémorise pour le journal (concaténation).
@@ -156,7 +160,7 @@ def log_error(message: str, exc: Exception | str | None = None):
                 _LAST_EXCEPTION = None
 
 def init_journal(dossier_base: Path, nom_prefixe: str = "conversion_log"):
-    """Initialise un journal CSV dans dossier_base."""
+    """Initialise un journal CSV dans dossier_base (colonnes étendues)."""
     global JOURNAL_ENABLED, JOURNAL_PATH, _JOURNAL_FH, _JOURNAL_WRITER
     try:
         dossier_base.mkdir(parents=True, exist_ok=True)
@@ -164,7 +168,19 @@ def init_journal(dossier_base: Path, nom_prefixe: str = "conversion_log"):
         JOURNAL_PATH = dossier_base / f"{nom_prefixe}_{ts}.csv"
         _JOURNAL_FH = open(JOURNAL_PATH, "w", newline="", encoding="utf-8")
         _JOURNAL_WRITER = csv.writer(_JOURNAL_FH)
-        _JOURNAL_WRITER.writerow(["timestamp", "status", "filetype", "source", "dest_pdf", "duration_s", "details", "error_messages", "exception"])
+        _JOURNAL_WRITER.writerow([
+            "timestamp",
+            "status",
+            "filetype",
+            "source",
+            "dest_pdf",
+            "duration_s",
+            "details",
+            "info_messages",
+            "error_messages",
+            "exception",
+            "method_used",
+        ])
         JOURNAL_ENABLED = True
         print(f"🧾 Journal activé: {JOURNAL_PATH}")
     except Exception as e:
@@ -174,26 +190,32 @@ def init_journal(dossier_base: Path, nom_prefixe: str = "conversion_log"):
         _JOURNAL_WRITER = None
         print(f"⚠️  Impossible de créer le journal: {e}")
 
-def journaliser(status: str, source: Path, dest_pdf=None, duration_s=None, details: str = "", error_messages: str = "", exception: Exception | str | None = None):
-    """Écrit une ligne dans le journal si activé."""
+
+def journaliser(status: str, source: Path, dest_pdf=None, duration_s=None, details: str = "", error_messages: str = "", exception: Exception | str | None = None, info_messages: str = "", method_used: str | None = None):
+    """Écrit une ligne dans le journal si activé.
+    Compatibilité: les anciens appels journaliser(status, source, dest_pdf, duration_s, details) continuent à fonctionner.
+    """
     global JOURNAL_ENABLED, _JOURNAL_WRITER
     if not JOURNAL_ENABLED or _JOURNAL_WRITER is None:
         return
     try:
+        filetype = source.suffix.lower().lstrip(".")
         _JOURNAL_WRITER.writerow([
             datetime.now().isoformat(timespec="seconds"),
             status,
-            source.suffix.lower().lstrip("."),
+            filetype,
             str(source),
             str(dest_pdf) if dest_pdf else "",
             f"{duration_s:.3f}" if isinstance(duration_s, (int, float)) else "",
-            details,
-            error_messages if error_messages else details,
+            details or "",
+            info_messages or "",
+            error_messages or (details or ""),
             str(exception) if exception is not None else "",
+            method_used or "",
         ])
     except Exception:
-        # Ne pas casser la conversion si le journal échoue.
         pass
+
 
 def fermer_journal():
     """Ferme le journal si ouvert."""
@@ -206,6 +228,7 @@ def fermer_journal():
         _JOURNAL_FH = None
         _JOURNAL_WRITER = None
         JOURNAL_ENABLED = False
+
 
 
 def detecter_tesseract():
@@ -647,6 +670,18 @@ def convertir_msg_vers_pdf(chemin_source, chemin_pdf):
     except Exception as e:
         log_error(f"  ⚠ Erreur MSG fallback: {e}", e)
         return False
+
+
+def log_info(message: str):
+    """Affiche une info et la mémorise pour le journal (concaténation)."""
+    global _LAST_INFOS
+    print(message)
+    try:
+        msg = str(message).strip()
+        if msg:
+            _LAST_INFOS.append(msg)
+    except Exception:
+        pass
 
 
 def is_password_error(err: Exception | str) -> bool:
@@ -1388,25 +1423,54 @@ def convertir_fichier_intelligent(chemin_source, chemin_pdf, methode_forcee=None
         if methode == "auto":
             # 1. Essayer Microsoft Office
             if WIN32COM_AVAILABLE and detecter_office():
+                log_info("  🔧 Tentative Microsoft Office (COM)...")
                 print(f"  🔧 Utilisation de Microsoft Office...")
                 res_office = convertir_avec_office(chemin_source, chemin_pdf)
                 if res_office == "password":
+                    _LAST_METHOD_USED = 'office'
                     return "skipped_password"
                 if res_office is True:
+                    _LAST_METHOD_USED = 'office'
                     return True
+                else:
+                    log_error("  ❌ Échec Microsoft Office (COM)")
             
+            else:
+                if not WIN32COM_AVAILABLE:
+                    log_info("  ℹ️  Microsoft Office COM indisponible (pywin32 non installé)")
+                else:
+                    log_info("  ℹ️  Microsoft Office non détecté ou inaccessible via COM")
+
             # 2. Essayer LibreOffice
             if LIBREOFFICE_PATH:
+                log_info(f"  🔧 Tentative LibreOffice... ({LIBREOFFICE_PATH})")
                 print(f"  🔧 Utilisation de LibreOffice...")
                 if convertir_avec_libreoffice(chemin_source, chemin_pdf):
+                    _LAST_METHOD_USED = 'libreoffice'
                     return True
+                else:
+                    log_error("  ❌ Échec LibreOffice")
             
+            else:
+                log_info("  ℹ️  LibreOffice non détecté")
+
             # 3. Méthode de secours ReportLab
-            print(f"  🔧 Utilisation de ReportLab (qualité réduite)...")
+            log_info("  🔧 Tentative ReportLab (qualité réduite)...")
             if extension in ['.docx']:
-                return convertir_word_vers_pdf_reportlab(chemin_source, chemin_pdf)
+                _LAST_METHOD_USED = 'reportlab'
+                ok = convertir_word_vers_pdf_reportlab(chemin_source, chemin_pdf)
+                if not ok:
+                    log_error("  ❌ Échec ReportLab (Word)")
+                return ok
             elif extension in ['.xls', '.xlsx', '.xlsm']:
-                return convertir_excel_vers_pdf_reportlab(chemin_source, chemin_pdf)
+                _LAST_METHOD_USED = 'reportlab'
+                ok = convertir_excel_vers_pdf_reportlab(chemin_source, chemin_pdf)
+                if not ok:
+                    log_error("  ❌ Échec ReportLab (Excel)")
+                return ok
+            else:
+                log_error(f"  ❌ Aucun fallback ReportLab pour {extension}")
+                return False
         
         elif methode == "office":
             res_office = convertir_avec_office(chemin_source, chemin_pdf)
@@ -1419,9 +1483,20 @@ def convertir_fichier_intelligent(chemin_source, chemin_pdf, methode_forcee=None
         
         elif methode == "reportlab":
             if extension in ['.docx']:
-                return convertir_word_vers_pdf_reportlab(chemin_source, chemin_pdf)
+                _LAST_METHOD_USED = 'reportlab'
+                ok = convertir_word_vers_pdf_reportlab(chemin_source, chemin_pdf)
+                if not ok:
+                    log_error("  ❌ Échec ReportLab (Word)")
+                return ok
             elif extension in ['.xls', '.xlsx', '.xlsm']:
-                return convertir_excel_vers_pdf_reportlab(chemin_source, chemin_pdf)
+                _LAST_METHOD_USED = 'reportlab'
+                ok = convertir_excel_vers_pdf_reportlab(chemin_source, chemin_pdf)
+                if not ok:
+                    log_error("  ❌ Échec ReportLab (Excel)")
+                return ok
+            else:
+                log_error(f"  ❌ Aucun fallback ReportLab pour {extension}")
+                return False
     
     return False
 
@@ -1527,13 +1602,13 @@ def convertir_fichier(chemin_source, repertoire_sortie=None, conserver_original=
     # - si un dossier de sortie est fourni, on copiera le PDF (dans convertir_fichier_intelligent)
     if extension == '.pdf' and repertoire_dest == chemin_source.parent:
         print(f"⏭️  Ignoré (déjà PDF): {chemin_source.name}")
-        journaliser('skipped_pdf', chemin_source, None, None, 'déjà PDF (même dossier)')
+        journaliser('skipped_pdf', chemin_source, None, None, 'déjà PDF (même dossier)', error_messages=' | '.join(_LAST_ERRORS), exception=_LAST_EXCEPTION, info_messages=' | '.join(_LAST_INFOS), method_used=_LAST_METHOD_USED)
         return 'skipped'
     
     # Vérifier si le fichier PDF existe déjà
     if chemin_pdf.exists() and not forcer:
         print(f"⏭️  Ignoré (PDF existant): {chemin_source.name}")
-        journaliser('skipped_exists', chemin_source, chemin_pdf, None, 'PDF existant')
+        journaliser('skipped_exists', chemin_source, chemin_pdf, None, 'PDF existant', error_messages=' | '.join(_LAST_ERRORS), exception=_LAST_EXCEPTION, info_messages=' | '.join(_LAST_INFOS), method_used=_LAST_METHOD_USED)
         return 'skipped'
     
     # Gérer les conflits de noms
@@ -1565,7 +1640,7 @@ def convertir_fichier(chemin_source, repertoire_sortie=None, conserver_original=
         taille_source = chemin_source.stat().st_size / 1024 / 1024  # MB
         taille_pdf = chemin_pdf.stat().st_size / 1024 / 1024  # MB
         print(f"  ✅ Succès en {duree:.1f}s ({taille_source:.1f}MB → {taille_pdf:.1f}MB)")
-        journaliser('success', chemin_source, chemin_pdf, duree, '')
+        journaliser('success', chemin_source, chemin_pdf, duree, '', error_messages=' | '.join(_LAST_ERRORS), exception=_LAST_EXCEPTION, info_messages=' | '.join(_LAST_INFOS), method_used=_LAST_METHOD_USED)
         
         if not conserver_original:
             try:
