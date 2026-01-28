@@ -100,7 +100,8 @@ except ImportError:
     PYPDF2_AVAILABLE = False
 
 # Configuration globale
-METHODE_CONVERSION = "auto"  # "office", "libreoffice", "reportlab", "auto"
+METHODE_CONVERSION = "auto"
+REPORTLAB_FALLBACK_ENABLED = False  # Par défaut: pas de fallback ReportLab pour Word/Excel/PPT  # "office", "libreoffice", "reportlab", "auto"
 LIBREOFFICE_PATH = None  # Sera détecté automatiquement
 UTILISER_OCR = False  # Active l'OCR pour les images
 MOTEUR_OCR = "auto"  # "tesseract", "easyocr", "paddleocr", "auto"
@@ -113,6 +114,7 @@ BROWSER_PATH = None  # Chrome/Edge détecté automatiquement
 
 # Journalisation (log CSV)
 JOURNAL_ENABLED = False
+JOURNAL_ERRORS_ONLY = True  # Par défaut: n'écrire dans le journal que les erreurs
 JOURNAL_PATH = None
 _JOURNAL_FH = None
 _JOURNAL_WRITER = None
@@ -197,6 +199,10 @@ def journaliser(status: str, source: Path, dest_pdf=None, duration_s=None, detai
     """
     global JOURNAL_ENABLED, _JOURNAL_WRITER
     if not JOURNAL_ENABLED or _JOURNAL_WRITER is None:
+        return
+
+    # Par défaut: journaliser uniquement les erreurs (failed / skipped_password)
+    if JOURNAL_ERRORS_ONLY and status not in ('failed', 'skipped_password'):
         return
     try:
         filetype = source.suffix.lower().lstrip(".")
@@ -1777,6 +1783,8 @@ def main():
         print("  --check              : Vérifier la configuration")
         print("  --journal            : (optionnel) Créer un journal CSV (activé par défaut)")
         print("  --no-journal         : Désactiver le journal CSV")
+        print("  --log-all            : Journaliser aussi les succès/skip (par défaut: erreurs uniquement)")
+        print("  --enable-reportlab-fallback : Autoriser le fallback ReportLab en mode auto")
         print("  --no-keep-ext        : Nommer en x.pdf au lieu de x.ext.pdf (par défaut: x.ext.pdf)")
         print("  -h, --help           : Afficher cette aide")
         print("\n📚 FORMATS SUPPORTÉS:")
@@ -1887,6 +1895,14 @@ def main():
         else:
             print(f"🔤 OCR activé (moteur: {MOTEUR_OCR})")
     
+    # Journal: par défaut erreurs uniquement (option --log-all)
+    global JOURNAL_ERRORS_ONLY
+    JOURNAL_ERRORS_ONLY = ('--log-all' not in sys.argv)
+
+    # Fallback ReportLab en mode auto (désactivé par défaut)
+    global REPORTLAB_FALLBACK_ENABLED
+    REPORTLAB_FALLBACK_ENABLED = ('--enable-reportlab-fallback' in sys.argv)
+
     # Traiter le répertoire
     traiter_repertoire(
         repertoire, 
