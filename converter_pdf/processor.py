@@ -2,7 +2,7 @@
 Orchestrateur de traitement des fichiers.
 
 Gère le parcours des fichiers, la sélection des convertisseurs,
-et la coordination avec le journal et le logger.
+et la coordination avec le rapport et le logger.
 """
 
 from __future__ import annotations
@@ -15,11 +15,23 @@ from typing import TYPE_CHECKING
 
 from .config import Config
 from .logger import ConverterLogger
-from .journal import Journal
+from .report import SessionReport
 from .converters import get_converter_chain, ConversionResult, ConversionStatus
 
 if TYPE_CHECKING:
     from .converters.base import BaseConverter
+
+
+def format_size(size_bytes: float) -> str:
+    """Formate une taille en format lisible."""
+    if size_bytes < 1024:
+        return f"{size_bytes:.0f} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
 class FileProcessor:
@@ -30,7 +42,7 @@ class FileProcessor:
     - Le parcours des fichiers (récursif ou non)
     - La sélection du bon convertisseur
     - La chaîne de fallback si un convertisseur échoue
-    - Le journal d'audit
+    - Le rapport de session
     - L'interruption propre (Ctrl+C)
 
     Usage:
@@ -49,7 +61,7 @@ class FileProcessor:
         self.config = config
         self.logger = logger
         self.converters = get_converter_chain(config, logger)
-        self.journal: Journal | None = None
+        self.report: SessionReport | None = None
         self._interrupted = False
 
         # Statistiques
@@ -110,12 +122,20 @@ class FileProcessor:
         """
         dest = self._get_dest_path(source, dest_dir)
 
+        # Taille du fichier source
+        try:
+            source_size = source.stat().st_size
+            source_size_str = format_size(source_size)
+        except OSError:
+            source_size = 0
+            source_size_str = "?"
+
         with self.logger.file_context(source):
             # Vérifier si le fichier est déjà un PDF
             if source.suffix.lower() == ".pdf":
                 if dest_dir is None or dest_dir == source.parent:
-                    self.logger.skip(source.name, "déjà PDF")
-                    return ConversionResult(
+                    self.logger.info(f"Ignoré (déjà PDF) : {source.name}")
+                    result = ConversionResult(
                         status=ConversionStatus.SKIPPED_PDF,
                         source=source,
                         dest=None,
@@ -123,11 +143,14 @@ class FileProcessor:
                         method="skip",
                         message="Fichier déjà au format PDF",
                     )
+                    if self.report:
+                        self.report.add_result(result)
+                    return result
 
             # Vérifier si le PDF existe déjà
             if dest.exists() and not self.config.force:
-                self.logger.skip(source.name, "PDF existant")
-                return ConversionResult(
+                self.logger.info(f"Ignoré (existe) : {source.name} ({source_size_str})")
+                result = ConversionResult(
                     status=ConversionStatus.SKIPPED_EXISTS,
                     source=source,
                     dest=dest,
@@ -135,6 +158,9 @@ class FileProcessor:
                     method="skip",
                     message="PDF déjà existant",
                 )
+                if self.report:
+                    self.report.add_result(result)
+                return result
 
             # Gérer les conflits de noms
             if dest.exists() and self.config.force:
@@ -150,7 +176,8 @@ class FileProcessor:
                     dest = (dest_dir or source.parent) / pdf_name
                     counter += 1
 
-            self.logger.info(f"Conversion: {source.name} -> {dest.name}")
+            # Log de début de conversion avec infos
+            self.logger.info(f"Conversion : {source.name} ({source_size_str})")
 
             # Essayer les convertisseurs en chaîne
             start = time.time()
@@ -168,15 +195,17 @@ class FileProcessor:
                 result = converter.convert(source, dest)
 
                 if result.status == ConversionStatus.SUCCESS:
-                    self.logger.success(
-                        f"Converti en {result.duration:.1f}s",
-                        method=result.method,
-                        size=f"{result.source_size_mb:.1f}MB -> {result.dest_size_mb:.1f}MB",
+                    # Log de succès détaillé
+                    dest_size_str = format_size(result.dest_size_mb * 1024 * 1024)
+                    ratio = (result.dest_size_mb / result.source_size_mb * 100) if result.source_size_mb > 0 else 0
+                    self.logger.info(
+                        f"  -> OK : {dest.name} ({dest_size_str}, {ratio:.0f}%) "
+                        f"[{result.method}, {result.duration:.1f}s]"
                     )
                     break
 
                 elif result.status == ConversionStatus.SKIPPED_PASSWORD:
-                    self.logger.skip(source.name, "mot de passe requis")
+                    self.logger.warning(f"  -> Ignoré : mot de passe requis")
                     break
 
                 else:
@@ -193,18 +222,19 @@ class FileProcessor:
                     method="none",
                     message=f"Aucun convertisseur pour {source.suffix}",
                 )
-                self.logger.skip(source.name, f"format non supporté ({source.suffix})")
+                self.logger.warning(f"  -> Ignoré : format non supporté ({source.suffix})")
 
             elif result.status == ConversionStatus.FAILED:
-                self.logger.fail(
-                    f"Échec conversion",
-                    exc=result.exception,
-                    method=result.method,
+                error_msg = result.message or str(result.exception) or "Erreur inconnue"
+                self.logger.error(
+                    f"  -> ÉCHEC : {error_msg} [{result.method}]"
                 )
+                if result.exception:
+                    self.logger.debug(f"Exception détaillée: {result.exception}")
 
-            # Journaliser
-            if self.journal:
-                self.journal.log(result)
+            # Ajouter au rapport
+            if self.report:
+                self.report.add_result(result)
 
             # Supprimer le source si demandé et succès
             if result.is_success and self.config.delete_source:
@@ -241,11 +271,16 @@ class FileProcessor:
         self._setup_signal_handler()
         self._interrupted = False
 
-        # Initialiser le journal
-        journal_dir = dest_dir or directory
-        if self.config.journal_enabled:
-            self.journal = Journal(self.config, self.logger, journal_dir)
-            self.journal.open()
+        # Initialiser le rapport de session
+        output_dir = dest_dir or directory
+        if self.config.report_enabled:
+            self.report = SessionReport(
+                source_directory=directory,
+                output_directory=output_dir,
+                recursive=self.config.recursive,
+            )
+        else:
+            self.report = None
 
         # Réinitialiser les stats
         self.stats = {"total": 0, "success": 0, "failed": 0, "skipped": 0}
@@ -257,11 +292,14 @@ class FileProcessor:
         pattern = "**/*" if self.config.recursive else "*"
         extensions = self.config.get_all_extensions()
 
-        self.logger.info(f"Traitement: {directory}")
+        self.logger.info(f"Démarrage du traitement : {directory}")
+        self.logger.info(f"Mode : {'récursif' if self.config.recursive else 'non récursif'}")
+        print("")  # Ligne vide pour aérer
+
         start_total = time.time()
 
         try:
-            for file_path in directory.glob(pattern):
+            for file_path in sorted(directory.glob(pattern)):
                 if self._interrupted:
                     break
 
@@ -284,11 +322,16 @@ class FileProcessor:
         except KeyboardInterrupt:
             self.logger.warning("Interruption clavier")
         finally:
-            # Fermer le journal
-            if self.journal:
-                self.journal.close()
+            pass
 
         duration_total = time.time() - start_total
+
+        # Finaliser et sauvegarder le rapport
+        if self.report:
+            self.report.finalize()
+            report_path = self.report.save(output_dir)
+            if report_path:
+                self.logger.info(f"Rapport sauvegardé : {report_path}")
 
         # Afficher le résumé
         self._print_summary(duration_total)
@@ -297,40 +340,65 @@ class FileProcessor:
 
     def _print_config(self, directory: Path) -> None:
         """Affiche la configuration de traitement."""
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 80)
         print("CONFIGURATION")
-        print("=" * 60)
-        print(f"Répertoire: {directory}")
-        print(f"Récursif: {'Oui' if self.config.recursive else 'Non'}")
-        print(f"Méthode: {self.config.method}")
-        print(f"Forcer: {'Oui' if self.config.force else 'Non'}")
-        print(f"Nommage: {'x.ext.pdf' if self.config.keep_extension else 'x.pdf'}")
-        print(f"Journal: {'Oui' if self.config.journal_enabled else 'Non'}")
-        print(f"Log level: {self.config.log_level}")
+        print("=" * 80)
+        print(f"  Répertoire      : {directory}")
+        print(f"  Récursif        : {'Oui' if self.config.recursive else 'Non'}")
+        print(f"  Méthode         : {self.config.method}")
+        print(f"  Forcer          : {'Oui' if self.config.force else 'Non'}")
+        print(f"  Nommage PDF     : {'fichier.ext.pdf' if self.config.keep_extension else 'fichier.pdf'}")
+        print(f"  Suppr. source   : {'Oui' if self.config.delete_source else 'Non'}")
+        print(f"  Rapport         : Oui")
+        print(f"  Niveau log      : {self.config.log_level}")
 
         # Convertisseurs disponibles
-        print("\nConvertisseurs disponibles:")
+        print("\n  Convertisseurs :")
         for conv in self.converters:
             status = "OK" if conv.is_available() else "Non disponible"
-            print(f"  - {conv.name}: {status}")
+            print(f"    - {conv.name}: {status}")
 
-        print("=" * 60 + "\n")
+        print("=" * 80 + "\n")
 
     def _print_summary(self, duration: float) -> None:
         """Affiche le résumé du traitement."""
-        print("\n" + "=" * 60)
+        print("\n" + "=" * 80)
         print("RÉSUMÉ")
-        print("=" * 60)
-        print(f"Durée totale: {duration:.1f}s")
-        print(f"Fichiers traités: {self.stats['total']}")
-        print(f"  - Succès: {self.stats['success']}")
-        print(f"  - Ignorés: {self.stats['skipped']}")
-        print(f"  - Échecs: {self.stats['failed']}")
+        print("=" * 80)
 
-        if self.journal and self.journal.path:
-            print(f"\nJournal: {self.journal.path}")
+        # Statistiques de base
+        print(f"  Durée totale      : {duration:.1f}s")
+        print(f"  Fichiers analysés : {self.stats['total']}")
+
+        if self.stats['total'] > 0:
+            success_pct = (self.stats['success'] / self.stats['total']) * 100
+            print(f"    - Convertis     : {self.stats['success']} ({success_pct:.0f}%)")
+        else:
+            print(f"    - Convertis     : 0")
+
+        print(f"    - Ignorés       : {self.stats['skipped']}")
+        print(f"    - Échecs        : {self.stats['failed']}")
+
+        # Statistiques de volume depuis le rapport
+        if self.report and self.report.total_source_bytes > 0:
+            print("")
+            print(f"  Volume source     : {self.report._format_size(self.report.total_source_bytes)}")
+            print(f"  Volume PDF        : {self.report._format_size(self.report.total_dest_bytes)}")
+            if self.report.total_dest_bytes > 0:
+                ratio = (self.report.total_dest_bytes / self.report.total_source_bytes) * 100
+                print(f"  Ratio             : {ratio:.0f}%")
+
+        # Rapport
+        if self.report:
+            report_dir = self.report.output_directory or self.report.source_directory
+            if report_dir:
+                print(f"\n  Rapport           : {report_dir}/conversion_report_*.txt")
+
+        # Conseils
+        if self.stats["failed"] > 0:
+            print("\n  [!] Des fichiers ont échoué. Consultez le rapport pour les détails.")
 
         if self.stats["skipped"] > 0 and not self.config.force:
-            print("\nAstuce: Utilisez --force pour reconvertir les fichiers existants")
+            print("\n  [i] Utilisez --force pour reconvertir les fichiers existants")
 
-        print("=" * 60 + "\n")
+        print("=" * 80 + "\n")

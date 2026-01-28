@@ -1,0 +1,136 @@
+# =============================================================================
+# Configuration par défaut pour ConverterToPdf
+# Fichier: .converterrc (format YAML)
+# =============================================================================
+#
+# Ce fichier est chargé automatiquement s'il est présent dans:
+#   1. Le répertoire de travail courant
+#   2. Le répertoire du programme
+#   3. Le répertoire utilisateur (~/)
+#
+# Vous pouvez aussi spécifier un fichier avec --config <chemin>
+#
+# Priorité: Arguments CLI > .converterrc > Valeurs par défaut
+#
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# METHODE DE CONVERSION
+# -----------------------------------------------------------------------------
+# Choix possibles: auto, office, libreoffice, reportlab
+#   - auto        : Détecte automatiquement la meilleure méthode
+#   - office      : Utilise Microsoft Office (Word, Excel, PowerPoint)
+#   - libreoffice : Utilise LibreOffice en mode headless
+#   - reportlab   : Utilise ReportLab (fallback pour texte/images)
+#
+# CLI: --method <valeur>
+method: auto
+
+# -----------------------------------------------------------------------------
+# NOMMAGE DES PDF
+# -----------------------------------------------------------------------------
+# Si true  : document.docx -> document.docx.pdf (conserve l'extension d'origine)
+# Si false : document.docx -> document.pdf
+#
+# CLI: --no-keep-ext (pour mettre à false)
+keep_extension: true
+
+# -----------------------------------------------------------------------------
+# LOGGING
+# -----------------------------------------------------------------------------
+# Niveau de log affiché dans la console
+# Choix possibles: DEBUG, INFO, WARNING, ERROR
+#   - DEBUG   : Tout afficher (très verbeux, utile pour debug)
+#   - INFO    : Afficher les infos importantes (recommandé)
+#   - WARNING : Afficher uniquement les avertissements et erreurs
+#   - ERROR   : Afficher uniquement les erreurs
+#
+# CLI: --log-level <valeur>
+log_level: INFO
+
+# Fichier de log (optionnel)
+# Décommentez pour activer l'écriture dans un fichier
+# Le fichier contiendra les logs niveau DEBUG (complet)
+#
+# CLI: --log-file <chemin>
+# log_file: converter.log
+
+# -----------------------------------------------------------------------------
+# RAPPORT DE SESSION
+# -----------------------------------------------------------------------------
+# Génère un fichier texte récapitulatif à la fin de chaque session:
+#   - Statistiques globales (fichiers traités, tailles, durées)
+#   - Détail par type de fichier
+#   - Liste des erreurs avec détails
+#   - Liste des fichiers protégés par mot de passe
+#
+# Le fichier est créé dans le répertoire de sortie:
+#   conversion_report_YYYYMMDD_HHMMSS.txt
+#
+# CLI: --no-report (pour désactiver)
+report_enabled: true
+
+# -----------------------------------------------------------------------------
+# OCR (Reconnaissance de caractères pour les images)
+# -----------------------------------------------------------------------------
+# Active l'OCR pour créer des PDF recherchables à partir d'images
+# Note: L'OCR est délégué à Adobe Acrobat Pro selon le README
+#
+# CLI: --ocr (pour activer)
+ocr_enabled: false
+
+# Moteur OCR à utiliser
+# Choix possibles: auto, tesseract, easyocr, paddleocr
+#
+# CLI: --ocr-engine <valeur>
+ocr_engine: auto
+
+# -----------------------------------------------------------------------------
+# TIMEOUTS (en secondes)
+# -----------------------------------------------------------------------------
+# Temps maximum d'attente pour les opérations de conversion
+# Si dépassé, l'opération est annulée et le fichier marqué en échec
+
+# Timeout pour Microsoft Office (Word, Excel, PowerPoint)
+office_timeout: 60
+
+# Timeout pour LibreOffice
+libreoffice_timeout: 60
+
+# Timeout pour la conversion HTML via navigateur headless
+browser_timeout: 30
+
+# -----------------------------------------------------------------------------
+# OPTIONS DE TRAITEMENT
+# -----------------------------------------------------------------------------
+
+# Traiter les sous-répertoires récursivement
+# Si true  : Parcourt tous les sous-dossiers
+# Si false : Traite uniquement les fichiers du répertoire spécifié
+#
+# CLI: -r ou --recursive (pour activer si false par défaut)
+recursive: true
+
+# Forcer la reconversion même si le PDF existe déjà
+# Si true  : Reconvertit et écrase les PDF existants
+# Si false : Ignore les fichiers dont le PDF existe déjà
+#
+# CLI: -f ou --force
+force: false
+
+# Supprimer le fichier source après conversion réussie
+# ATTENTION: Irréversible! Les fichiers originaux seront supprimés
+#
+# CLI: -d ou --delete
+delete_source: false
+
+# -----------------------------------------------------------------------------
+# CHEMINS EXTERNES (optionnel, détectés automatiquement)
+# -----------------------------------------------------------------------------
+# Décommentez et modifiez si la détection automatique échoue
+
+# Chemin vers LibreOffice (soffice.exe)
+# libreoffice_path: C:\Program Files\LibreOffice\program\soffice.exe
+
+# Chemin vers Chrome ou Edge
+# browser_path: C:\Program Files\Google\Chrome\Application\chrome.exe

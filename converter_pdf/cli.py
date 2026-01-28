@@ -93,17 +93,12 @@ Exemples:
         help="Fichier de log (debug complet)",
     )
 
-    # Journal CSV
-    journal = parser.add_argument_group("Journal CSV")
-    journal.add_argument(
-        "--no-journal",
+    # Rapport de session
+    report = parser.add_argument_group("Rapport")
+    report.add_argument(
+        "--no-report",
         action="store_true",
-        help="Désactiver le journal CSV",
-    )
-    journal.add_argument(
-        "--log-all",
-        action="store_true",
-        help="Journaliser tous les fichiers (pas seulement les erreurs)",
+        help="Désactiver la génération du rapport de session",
     )
 
     # Nommage

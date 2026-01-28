@@ -40,6 +40,7 @@ def get_converter_chain(
     from .text import TextConverter
     from .xml_converter import XmlConverter
     from .msg import MsgConverter
+    from .archive import ArchiveConverter
     from .reportlab_fallback import ReportLabWordConverter, ReportLabExcelConverter
 
     converters: list[BaseConverter] = []
@@ -85,6 +86,7 @@ def get_converter_chain(
         TextConverter(config, logger),
         XmlConverter(config, logger),
         MsgConverter(config, logger),
+        ArchiveConverter(config, logger),
     ])
 
     return converters

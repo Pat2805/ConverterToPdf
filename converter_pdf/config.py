@@ -63,12 +63,9 @@ class Config:
     log_file_level: str = "DEBUG"
     """Niveau de log fichier"""
 
-    # === Journal CSV ===
-    journal_enabled: bool = True
-    """Activer le journal CSV d'audit"""
-
-    journal_errors_only: bool = True
-    """Journaliser uniquement les erreurs (pas les succès)"""
+    # === Rapport de session ===
+    report_enabled: bool = True
+    """Activer la génération du rapport de session (fichier texte)"""
 
     # === OCR ===
     ocr_enabled: bool = False
@@ -139,14 +136,26 @@ class Config:
 
         Args:
             config_path: Chemin vers le fichier de config.
-                        Si None, cherche .converterrc dans le répertoire courant.
+                        Si None, cherche .converterrc dans plusieurs emplacements.
 
         Returns:
             Instance de Config
         """
-        # Chercher le fichier de config
+        # Chercher le fichier de config dans plusieurs emplacements
         if config_path is None:
-            config_path = Path.cwd() / ".converterrc"
+            # Emplacements de recherche (par ordre de priorité)
+            search_paths = [
+                Path.cwd() / ".converterrc",  # Répertoire de travail
+                Path(__file__).parent.parent / ".converterrc",  # Répertoire du package
+                Path.home() / ".converterrc",  # Répertoire utilisateur
+            ]
+            config_path = None
+            for path in search_paths:
+                if path.exists():
+                    config_path = path
+                    break
+            if config_path is None:
+                return cls()  # Aucun fichier trouvé, config par défaut
         else:
             config_path = Path(config_path)
 
@@ -215,42 +224,48 @@ class Config:
         """
         Met à jour depuis les arguments CLI (argparse namespace).
 
+        Les arguments CLI ont priorité sur le fichier de config,
+        SAUF pour les flags booléens (store_true) qui ne sont mis à jour
+        que s'ils sont explicitement activés sur la ligne de commande.
+
         Args:
             args: Namespace d'argparse
         """
         updates = {}
 
-        # Mapping des arguments CLI vers les attributs de config
-        arg_mapping = {
+        # Mapping des arguments non-booléens (valeur None si non spécifié)
+        non_bool_mapping = {
             "method": "method",
-            "recursive": "recursive",
-            "force": "force",
-            "delete": "delete_source",
             "log_level": "log_level",
             "log_file": "log_file",
-            "output": None,  # Géré séparément
-            "ocr": "ocr_enabled",
             "ocr_engine": "ocr_engine",
-            "no_keep_ext": None,  # Géré spécialement
-            "no_journal": None,  # Géré spécialement
-            "log_all": None,  # Géré spécialement
         }
 
-        for arg_name, config_name in arg_mapping.items():
-            if config_name and hasattr(args, arg_name):
+        for arg_name, config_name in non_bool_mapping.items():
+            if hasattr(args, arg_name):
                 value = getattr(args, arg_name)
                 if value is not None:
                     updates[config_name] = value
 
-        # Gestion des flags inversés
+        # Flags booléens (store_true): ne mettre à jour que si True
+        # Car False signifie "non spécifié sur la CLI", pas "désactivé"
+        bool_flags = {
+            "recursive": "recursive",
+            "force": "force",
+            "delete": "delete_source",
+            "ocr": "ocr_enabled",
+        }
+
+        for arg_name, config_name in bool_flags.items():
+            if hasattr(args, arg_name) and getattr(args, arg_name):
+                updates[config_name] = True
+
+        # Gestion des flags inversés (--no-xxx)
         if hasattr(args, "no_keep_ext") and args.no_keep_ext:
             updates["keep_extension"] = False
 
-        if hasattr(args, "no_journal") and args.no_journal:
-            updates["journal_enabled"] = False
-
-        if hasattr(args, "log_all") and args.log_all:
-            updates["journal_errors_only"] = False
+        if hasattr(args, "no_report") and args.no_report:
+            updates["report_enabled"] = False
 
         self.update(**updates)
 
@@ -279,6 +294,9 @@ class Config:
             ".xml",
             # Email
             ".msg",
+            # Archives
+            ".zip", ".rar", ".7z",
+            ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2",
             # PDF (copie/skip)
             ".pdf",
         ]
