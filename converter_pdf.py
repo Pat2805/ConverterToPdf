@@ -716,19 +716,31 @@ def convertir_avec_office(chemin_source, chemin_pdf):
                             doc.SaveAs(chemin_pdf_abs, FileFormat=17)
                         succes = True
                     except Exception:
+
                         if _pw(e_export):
-                        print(f"  🔒 Document protégé par mot de passe (Word) : {e_export}")
-                        succes = "password"
-                    else:
-                        print(f"  ⚠ Erreur Office Word: {e_export}")
-                        succes = False
+
+                            print(f"  🔒 Document protégé par mot de passe (Word) : {e_export}")
+
+                            succes = "password"
+
+                        else:
+
+                            print(f"  ⚠ Erreur Office Word: {e_export}")
+
+                            succes = False
             except Exception as e:
+
                 if _pw(e):
-                print(f"  🔒 Document protégé par mot de passe (Word) : {e}")
-                succes = "password"
-            else:
-                print(f"  ⚠ Erreur Office Word: {e}")
-                succes = False
+
+                    print(f"  🔒 Document protégé par mot de passe (Word) : {e}")
+
+                    succes = "password"
+
+                else:
+
+                    print(f"  ⚠ Erreur Office Word: {e}")
+
+                    succes = False
             finally:
                 try:
                     if doc is not None:
@@ -753,12 +765,18 @@ def convertir_avec_office(chemin_source, chemin_pdf):
                 wb.Close(False)
                 succes = True
             except Exception as e:
+
                 if _pw(e):
-                print(f"  🔒 Fichier protégé par mot de passe (Excel) : {e}")
-                succes = "password"
-            else:
-                print(f"  ⚠ Erreur Office Excel: {e}")
-                succes = False
+
+                    print(f"  🔒 Fichier protégé par mot de passe (Excel) : {e}")
+
+                    succes = "password"
+
+                else:
+
+                    print(f"  ⚠ Erreur Office Excel: {e}")
+
+                    succes = False
             finally:
                 excel.Quit()
         
