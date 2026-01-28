@@ -117,6 +117,33 @@ JOURNAL_PATH = None
 _JOURNAL_FH = None
 _JOURNAL_WRITER = None
 
+
+# Contexte d'erreur (par fichier) pour enrichir le journal CSV
+_LAST_ERRORS: list[str] = []
+_LAST_EXCEPTION: str | None = None
+
+def reset_error_context():
+    """Réinitialise le buffer d'erreurs pour le fichier en cours."""
+    global _LAST_ERRORS, _LAST_EXCEPTION
+    _LAST_ERRORS = []
+    _LAST_EXCEPTION = None
+
+def log_error(message: str, exc: Exception | str | None = None):
+    """Affiche une erreur et la mémorise pour le journal (concaténation)."""
+    global _LAST_ERRORS, _LAST_EXCEPTION
+    print(message)
+    try:
+        msg = str(message).strip()
+        if msg:
+            _LAST_ERRORS.append(msg)
+    except Exception:
+        pass
+    if exc is not None and _LAST_EXCEPTION is None:
+        try:
+            _LAST_EXCEPTION = str(exc)
+        except Exception:
+            _LAST_EXCEPTION = None
+
 def init_journal(dossier_base: Path, nom_prefixe: str = "conversion_log"):
     """Initialise un journal CSV dans dossier_base."""
     global JOURNAL_ENABLED, JOURNAL_PATH, _JOURNAL_FH, _JOURNAL_WRITER
@@ -126,7 +153,7 @@ def init_journal(dossier_base: Path, nom_prefixe: str = "conversion_log"):
         JOURNAL_PATH = dossier_base / f"{nom_prefixe}_{ts}.csv"
         _JOURNAL_FH = open(JOURNAL_PATH, "w", newline="", encoding="utf-8")
         _JOURNAL_WRITER = csv.writer(_JOURNAL_FH)
-        _JOURNAL_WRITER.writerow(["timestamp", "status", "source", "dest_pdf", "duration_s", "details"])
+        _JOURNAL_WRITER.writerow(["timestamp", "status", "filetype", "source", "dest_pdf", "duration_s", "details", "error_messages", "exception"])
         JOURNAL_ENABLED = True
         print(f"🧾 Journal activé: {JOURNAL_PATH}")
     except Exception as e:
@@ -136,7 +163,7 @@ def init_journal(dossier_base: Path, nom_prefixe: str = "conversion_log"):
         _JOURNAL_WRITER = None
         print(f"⚠️  Impossible de créer le journal: {e}")
 
-def journaliser(status: str, source: Path, dest_pdf=None, duration_s=None, details: str = ""):
+def journaliser(status: str, source: Path, dest_pdf=None, duration_s=None, details: str = "", error_messages: str = "", exception: Exception | str | None = None):
     """Écrit une ligne dans le journal si activé."""
     global JOURNAL_ENABLED, _JOURNAL_WRITER
     if not JOURNAL_ENABLED or _JOURNAL_WRITER is None:
@@ -145,10 +172,13 @@ def journaliser(status: str, source: Path, dest_pdf=None, duration_s=None, detai
         _JOURNAL_WRITER.writerow([
             datetime.now().isoformat(timespec="seconds"),
             status,
+            source.suffix.lower().lstrip("."),
             str(source),
             str(dest_pdf) if dest_pdf else "",
             f"{duration_s:.3f}" if isinstance(duration_s, (int, float)) else "",
-            details
+            details,
+            error_messages if error_messages else details,
+            str(exception) if exception is not None else "",
         ])
     except Exception:
         # Ne pas casser la conversion si le journal échoue.
@@ -479,13 +509,13 @@ def convertir_html_vers_pdf(chemin_source, chemin_pdf):
             pass
 
         if result.returncode != 0:
-            print(f"  ⚠ Erreur navigateur: {result.stderr.strip()[:300]}")
+            log_error(f"  ⚠ Erreur navigateur: {result.stderr.strip()[:300]}", result.stderr)
             return False
 
         return Path(chemin_pdf).exists() and Path(chemin_pdf).stat().st_size > 0
 
     except Exception as e:
-        print(f"  ⚠ Erreur HTML->PDF: {e}")
+        log_error(f"  ⚠ Erreur HTML->PDF: {e}", e)
         return False
 
 def convertir_texte_vers_pdf(chemin_source, chemin_pdf, titre=None):
@@ -716,30 +746,18 @@ def convertir_avec_office(chemin_source, chemin_pdf):
                             doc.SaveAs(chemin_pdf_abs, FileFormat=17)
                         succes = True
                     except Exception:
-
                         if _pw(e_export):
-
-                            print(f"  🔒 Document protégé par mot de passe (Word) : {e_export}")
-
+                            log_error(f"  🔒 Document protégé par mot de passe (Word) : {e_export}", e_export)
                             succes = "password"
-
                         else:
-
-                            print(f"  ⚠ Erreur Office Word: {e_export}")
-
+                            log_error(f"  ⚠ Erreur Office Word: {e_export}", e_export)
                             succes = False
             except Exception as e:
-
                 if _pw(e):
-
-                    print(f"  🔒 Document protégé par mot de passe (Word) : {e}")
-
+                    log_error(f"  🔒 Document protégé par mot de passe (Word) : {e}", e)
                     succes = "password"
-
                 else:
-
-                    print(f"  ⚠ Erreur Office Word: {e}")
-
+                    log_error(f"  ⚠ Erreur Office Word: {e}", e)
                     succes = False
             finally:
                 try:
@@ -765,17 +783,11 @@ def convertir_avec_office(chemin_source, chemin_pdf):
                 wb.Close(False)
                 succes = True
             except Exception as e:
-
                 if _pw(e):
-
-                    print(f"  🔒 Fichier protégé par mot de passe (Excel) : {e}")
-
+                    log_error(f"  🔒 Fichier protégé par mot de passe (Excel) : {e}", e)
                     succes = "password"
-
                 else:
-
-                    print(f"  ⚠ Erreur Office Excel: {e}")
-
+                    log_error(f"  ⚠ Erreur Office Excel: {e}", e)
                     succes = False
             finally:
                 excel.Quit()
@@ -850,14 +862,14 @@ def convertir_avec_libreoffice(chemin_source, chemin_pdf):
             
             return True
         else:
-            print(f"  ⚠ Erreur LibreOffice: {result.stderr}")
+            log_error(f"  ⚠ Erreur LibreOffice: {result.stderr}", result.stderr)
             return False
             
     except subprocess.TimeoutExpired:
-        print(f"  ⚠ Timeout LibreOffice (>60s)")
+        log_error("  ⚠ Timeout LibreOffice (>60s)")
         return False
     except Exception as e:
-        print(f"  ⚠ Erreur LibreOffice: {e}")
+        log_error(f"  ⚠ Erreur LibreOffice: {e}", e)
         return False
 
 def convertir_jpg_vers_pdf(chemin_jpg, chemin_pdf):
@@ -1529,6 +1541,7 @@ def convertir_fichier(chemin_source, repertoire_sortie=None, conserver_original=
     # Conversion
     print(f"📄 Conversion: {chemin_source.name} -> {nom_pdf}")
     
+    reset_error_context()
     debut = time.time()
     resultat_conv = convertir_fichier_intelligent(chemin_source, chemin_pdf)
     duree = time.time() - debut
@@ -1555,12 +1568,12 @@ def convertir_fichier(chemin_source, repertoire_sortie=None, conserver_original=
         except Exception:
             pass
         print(f"  🔒 Ignoré (mot de passe requis): {chemin_source.name}")
-        journaliser('skipped_password', chemin_source, None, duree, 'mot de passe requis / fichier protégé')
+        journaliser('skipped_password', chemin_source, None, duree, 'mot de passe requis / fichier protégé', error_messages=' | '.join(_LAST_ERRORS), exception=_LAST_EXCEPTION)
         return 'skipped'
 
     else:
         print(f"  ❌ Échec de conversion")
-        journaliser('failed', chemin_source, chemin_pdf, duree, 'échec conversion')
+        journaliser('failed', chemin_source, chemin_pdf, duree, 'échec conversion', error_messages=' | '.join(_LAST_ERRORS), exception=_LAST_EXCEPTION)
         return 'failed'
 
 def traiter_repertoire(repertoire, recursif=False, repertoire_sortie=None, 
