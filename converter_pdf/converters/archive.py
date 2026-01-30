@@ -241,6 +241,26 @@ class ArchiveConverter(BaseConverter):
                 message=f"Type d'archive non reconnu: {source.suffix}",
             )
 
+        # Déterminer le nom du dossier de sortie (sans extension d'archive)
+        # Ex: archive.zip -> archive/, data.tar.gz -> data/
+        archive_stem = source.stem
+        # Gérer les doubles extensions (.tar.gz, .tar.bz2)
+        if Path(archive_stem).suffix in ('.tar',):
+            archive_stem = Path(archive_stem).stem
+
+        # Vérifier si le dossier de sortie existe déjà (skip sauf si force)
+        output_folder = dest.parent / archive_stem
+        if output_folder.exists() and not self.config.force:
+            self.logger.info(f"  Dossier déjà existant: {output_folder.name}/ (utiliser --force pour re-extraire)")
+            return ConversionResult(
+                status=ConversionStatus.SKIPPED_EXISTS,
+                source=source,
+                dest=output_folder,
+                duration=time.time() - start,
+                method=self.name,
+                message="Dossier de sortie déjà existant",
+            )
+
         # Créer un dossier temporaire pour l'extraction
         temp_dir = None
         try:
@@ -262,19 +282,11 @@ class ArchiveConverter(BaseConverter):
 
             self.logger.info(f"  {extracted_count} fichier(s) extrait(s)")
 
-            # Déterminer le nom du dossier de sortie (sans extension d'archive)
-            # Ex: archive.zip -> archive/, data.tar.gz -> data/
-            archive_stem = source.stem
-            # Gérer les doubles extensions (.tar.gz, .tar.bz2)
-            if Path(archive_stem).suffix in ('.tar',):
-                archive_stem = Path(archive_stem).stem
-
             # Vérifier si l'archive contient uniquement un dossier du même nom
             # Ex: test.zip contenant uniquement test/ -> utiliser temp_dir/test comme source
             source_dir = self._get_effective_source_dir(temp_dir, archive_stem)
 
             # Créer le dossier de sortie
-            output_folder = dest.parent / archive_stem
             output_folder.mkdir(parents=True, exist_ok=True)
 
             # Convertir les fichiers extraits
@@ -406,6 +418,7 @@ class ArchiveConverter(BaseConverter):
                 if ext == '.pdf':
                     dest_file = dest_subdir / safe_name
                     shutil.copy2(source_file, dest_file)
+                    self.logger.info(f"    [PDF] {filename} (copié)")
                     kept += 1
                     continue
 
@@ -427,26 +440,32 @@ class ArchiveConverter(BaseConverter):
                         if not converter.is_available():
                             continue
 
-                        self.logger.debug(f"  Conversion: {filename}")
+                        self.logger.info(f"    [CONV] {filename}")
                         result = converter.convert(dest_file, pdf_dest)
 
                         if result.status == ConversionStatus.SUCCESS:
                             converted += 1
                             conversion_success = True
+                            self.logger.info(f"      -> OK [{converter.name}]")
                             # Supprimer l'original uniquement si delete_source est activé
                             if self.config.delete_source:
                                 try:
                                     dest_file.unlink()
-                                    self.logger.debug(f"  -> Original supprimé: {safe_name}")
+                                    self.logger.debug(f"      -> Original supprimé")
                                 except Exception:
                                     pass
                             break
+                        else:
+                            # Log l'échec pour ce convertisseur, essayer le suivant
+                            self.logger.debug(f"      -> Échec [{converter.name}]")
 
                     if not conversion_success:
                         # Échec de conversion, l'original est déjà copié
+                        self.logger.warning(f"    [ÉCHEC] {filename} (conservé)")
                         failed += 1
                 else:
                     # Extension non convertible, l'original est déjà copié
+                    self.logger.info(f"    [KEEP] {filename} (non convertible)")
                     kept += 1
 
         return converted, failed, kept

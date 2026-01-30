@@ -101,6 +101,12 @@ class Config:
     delete_source: bool = False
     """Supprimer le fichier source après conversion réussie"""
 
+    hide_source: bool = False
+    """Rendre le fichier source caché après conversion réussie (Windows)"""
+
+    dry_run: bool = False
+    """Simuler les conversions sans les exécuter"""
+
     # === Filtres de formats ===
     extensions: list[str] | None = None
     """Extensions à traiter (None = toutes)"""
@@ -128,6 +134,13 @@ class Config:
         valid_ocr = {"auto", "tesseract", "easyocr", "paddleocr"}
         if self.ocr_engine not in valid_ocr:
             raise ValueError(f"ocr_engine doit être dans {valid_ocr}")
+
+        # Vérifier l'incompatibilité delete_source / hide_source
+        if self.delete_source and self.hide_source:
+            raise ValueError(
+                "delete_source et hide_source sont incompatibles. "
+                "Choisissez l'un ou l'autre."
+            )
 
     @classmethod
     def load(cls, config_path: Path | str | None = None) -> "Config":
@@ -253,7 +266,9 @@ class Config:
             "recursive": "recursive",
             "force": "force",
             "delete": "delete_source",
+            "hide": "hide_source",
             "ocr": "ocr_enabled",
+            "dry_run": "dry_run",
         }
 
         for arg_name, config_name in bool_flags.items():

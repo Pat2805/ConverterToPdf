@@ -46,11 +46,15 @@ Fichier `.converterrc` (YAML) chargé automatiquement depuis:
 |--------|------|--------|-------------|
 | `method` | str | "auto" | auto, office, libreoffice, reportlab |
 | `keep_extension` | bool | true | doc.docx -> doc.docx.pdf |
-| `recursive` | bool | true | Parcourir sous-dossiers |
+| `recursive` | bool | false | Parcourir sous-dossiers |
 | `delete_source` | bool | false | Supprimer originaux après conversion |
+| `hide_source` | bool | false | Rendre les originaux cachés (Windows) |
+| `dry_run` | bool | false | Simuler sans convertir |
 | `report_enabled` | bool | true | Générer rapport de session |
 | `log_level` | str | "INFO" | DEBUG, INFO, WARNING, ERROR |
 | `office_timeout` | int | 60 | Timeout COM (secondes) |
+
+**Note**: `delete_source` et `hide_source` sont mutuellement exclusifs.
 
 ## Convertisseurs
 
@@ -65,13 +69,22 @@ Fichier `.converterrc` (YAML) chargé automatiquement depuis:
   - Seuils: < 10KB ou < 100x100 pixels avec nom suspect
   - Très petites: < 5KB ET < 50x50 pixels (filtrées même sans nom suspect)
 - **Gestion des doublons**: `image.jpg`, `image (1).jpg`, `image (2).jpg`
-- **Dossier de sortie**: `message.msg/` (pas `.pdf` car c'est un dossier)
+- **Dossier de sortie**: `message.msg-open/` (évite le conflit avec le fichier source)
+- **Skip si dossier existe**: Ignore si le dossier de sortie existe déjà (sauf `--force`)
+- **Archives en pièce jointe**: Les ZIP/RAR/7Z sont supportés et traités récursivement
 
 ### Archive (`archive.py`)
 - Formats: ZIP (natif), TAR/TAR.GZ/TAR.BZ2 (natif), RAR (rarfile), 7Z (py7zr)
 - **Nommage du dossier**: `archive.zip` -> `archive/` (sans extension)
 - **Anti-duplication**: Si l'archive contient uniquement un dossier du même nom, on évite `test/test/`
 - **Préservation des originaux**: Les fichiers extraits sont conservés sauf si `delete_source: true`
+- **Skip si dossier existe**: Ignore si le dossier de sortie existe déjà (sauf `--force`)
+
+### Extraction récursive (processor.py)
+- **Archives imbriquées**: ZIP dans ZIP, MSG dans ZIP, etc. sont supportés
+- Le processor traite d'abord le répertoire initial, puis les dossiers créés par extraction
+- Traitement en passes successives jusqu'à ce qu'il n'y ait plus de nouveaux dossiers
+- **Protection anti-boucle**: Un dossier ne peut être traité qu'une seule fois
 
 ## Rapport de session (`report.py`)
 
@@ -92,6 +105,8 @@ python -m converter_pdf /chemin/vers/dossier
 python -m converter_pdf /chemin -r              # Récursif
 python -m converter_pdf /chemin -f              # Force reconversion
 python -m converter_pdf /chemin -d              # Supprimer originaux
+python -m converter_pdf /chemin -H              # Cacher originaux (Windows)
+python -m converter_pdf /chemin -n              # Dry-run (simulation)
 python -m converter_pdf /chemin --no-report     # Sans rapport
 python -m converter_pdf /chemin --log-level DEBUG
 python -m converter_pdf /chemin --method office # Forcer méthode
@@ -105,7 +120,7 @@ python -m converter_pdf /chemin --method office # Forcer méthode
 - Timeout sur les opérations (évite blocages)
 
 ### Nommage des dossiers
-- MSG: `source.msg/` (nom du fichier source)
+- MSG: `source.msg-open/` (évite conflit avec le fichier source)
 - Archive: `source/` (sans extension .zip/.rar/.7z)
 - Éviter les doubles dossiers (test.zip/test/ -> test/)
 
@@ -130,6 +145,41 @@ python -m converter_pdf /chemin --method office # Forcer méthode
 - extract_msg (fichiers MSG)
 - rarfile + unrar (archives RAR)
 - py7zr (archives 7Z)
+
+## Tests automatisés
+
+### Structure des tests
+```
+tests/
+├── conftest.py         # Fixtures pytest (config, logger, file_factory)
+├── test_config.py      # Tests configuration (73 tests)
+├── test_converters.py  # Tests convertisseurs base, text, image, xml
+├── test_processor.py   # Tests orchestrateur FileProcessor
+├── test_archive.py     # Tests extraction et conversion d'archives
+└── test_msg.py         # Tests conversion MSG Outlook
+```
+
+### Exécution des tests
+```bash
+# Tous les tests
+pytest tests/ -v
+
+# Tests d'un module spécifique
+pytest tests/test_config.py -v
+
+# Avec couverture
+pytest tests/ --cov=converter_pdf --cov-report=html
+
+# Exclure les tests lents/intégration
+pytest tests/ -v -m "not slow and not integration"
+```
+
+### Markers disponibles
+- `@pytest.mark.slow` - Tests lents
+- `@pytest.mark.integration` - Tests d'intégration
+- `@pytest.mark.requires_office` - Nécessite Microsoft Office
+- `@pytest.mark.requires_pillow` - Nécessite Pillow
+- `@pytest.mark.requires_reportlab` - Nécessite ReportLab
 
 ## Tests manuels suggérés
 

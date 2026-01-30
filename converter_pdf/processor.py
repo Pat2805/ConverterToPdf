@@ -72,6 +72,11 @@ class FileProcessor:
             "skipped": 0,
         }
 
+        # Dossiers créés par extraction (archives/MSG) à traiter ensuite
+        self._extracted_folders: list[Path] = []
+        # Dossiers déjà traités (pour éviter les boucles infinies)
+        self._processed_folders: set[Path] = set()
+
     def _setup_signal_handler(self) -> None:
         """Configure la gestion de Ctrl+C."""
         def signal_handler(signum, frame):
@@ -79,6 +84,33 @@ class FileProcessor:
             self.logger.warning("Interruption demandée (Ctrl+C), arrêt propre...")
 
         signal.signal(signal.SIGINT, signal_handler)
+
+    def _hide_file(self, file_path: Path) -> None:
+        """
+        Rend un fichier caché (Windows uniquement).
+
+        Utilise l'attribut FILE_ATTRIBUTE_HIDDEN de Windows.
+
+        Args:
+            file_path: Chemin du fichier à cacher
+        """
+        if sys.platform != "win32":
+            self.logger.debug("hide_source ignoré (non-Windows)")
+            return
+
+        import ctypes
+        FILE_ATTRIBUTE_HIDDEN = 0x02
+
+        # Obtenir les attributs actuels
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(str(file_path))
+        if attrs == -1:
+            raise OSError(f"Impossible de lire les attributs de {file_path}")
+
+        # Ajouter l'attribut caché
+        new_attrs = attrs | FILE_ATTRIBUTE_HIDDEN
+        result = ctypes.windll.kernel32.SetFileAttributesW(str(file_path), new_attrs)
+        if not result:
+            raise OSError(f"Impossible de cacher {file_path}")
 
     def _get_dest_path(self, source: Path, dest_dir: Path | None) -> Path:
         """
@@ -176,6 +208,28 @@ class FileProcessor:
                     dest = (dest_dir or source.parent) / pdf_name
                     counter += 1
 
+            # Mode dry-run: simuler sans convertir
+            if self.config.dry_run:
+                # Trouver le convertisseur qui serait utilisé
+                converter_name = "none"
+                for converter in self.converters:
+                    if converter.can_convert(source.suffix) and converter.is_available():
+                        converter_name = converter.name
+                        break
+
+                self.logger.info(f"[DRY-RUN] {source.name} ({source_size_str}) -> {dest.name} [{converter_name}]")
+                result = ConversionResult(
+                    status=ConversionStatus.SUCCESS,
+                    source=source,
+                    dest=dest,
+                    duration=0,
+                    method=f"dry_run:{converter_name}",
+                    message="Simulation (dry-run)",
+                )
+                if self.report:
+                    self.report.add_result(result)
+                return result
+
             # Log de début de conversion avec infos
             self.logger.info(f"Conversion : {source.name} ({source_size_str})")
 
@@ -236,6 +290,13 @@ class FileProcessor:
             if self.report:
                 self.report.add_result(result)
 
+            # Si la conversion a créé un dossier (archive/MSG), le mémoriser pour traitement ultérieur
+            if result.is_success and result.dest and result.dest.is_dir():
+                resolved_dest = result.dest.resolve()
+                if resolved_dest not in self._processed_folders:
+                    self._extracted_folders.append(resolved_dest)
+                    self.logger.debug(f"Dossier extrait à traiter: {result.dest}")
+
             # Supprimer le source si demandé et succès
             if result.is_success and self.config.delete_source:
                 try:
@@ -244,7 +305,51 @@ class FileProcessor:
                 except Exception as e:
                     self.logger.warning(f"Impossible de supprimer le source: {e}")
 
+            # Cacher le source si demandé et succès (Windows uniquement)
+            if result.is_success and self.config.hide_source:
+                try:
+                    self._hide_file(source)
+                    self.logger.debug("Fichier source caché")
+                except Exception as e:
+                    self.logger.warning(f"Impossible de cacher le source: {e}")
+
             return result
+
+    def _process_single_directory(
+        self,
+        directory: Path,
+        pattern: str,
+        extensions: set[str],
+        dest_dir: Path | None,
+    ) -> None:
+        """
+        Traite les fichiers d'un seul répertoire.
+
+        Args:
+            directory: Répertoire à traiter
+            pattern: Pattern glob (* ou **/*)
+            extensions: Extensions à traiter
+            dest_dir: Répertoire de destination (optionnel)
+        """
+        for file_path in sorted(directory.glob(pattern)):
+            if self._interrupted:
+                break
+
+            if not file_path.is_file():
+                continue
+
+            if file_path.suffix.lower() not in extensions:
+                continue
+
+            self.stats["total"] += 1
+            result = self.process_file(file_path, dest_dir)
+
+            if result.is_success:
+                self.stats["success"] += 1
+            elif result.is_skipped:
+                self.stats["skipped"] += 1
+            else:
+                self.stats["failed"] += 1
 
     def process_directory(
         self,
@@ -282,8 +387,10 @@ class FileProcessor:
         else:
             self.report = None
 
-        # Réinitialiser les stats
+        # Réinitialiser les stats et les listes de dossiers
         self.stats = {"total": 0, "success": 0, "failed": 0, "skipped": 0}
+        self._extracted_folders = []
+        self._processed_folders = set()
 
         # Afficher la configuration
         self._print_config(directory)
@@ -299,25 +406,32 @@ class FileProcessor:
         start_total = time.time()
 
         try:
-            for file_path in sorted(directory.glob(pattern)):
-                if self._interrupted:
-                    break
+            # Traiter le répertoire initial
+            self._process_single_directory(directory, pattern, extensions, dest_dir)
 
-                if not file_path.is_file():
-                    continue
+            # Traiter les dossiers extraits (archives/MSG) récursivement
+            extraction_pass = 0
+            while self._extracted_folders and not self._interrupted:
+                extraction_pass += 1
+                folders_to_process = self._extracted_folders.copy()
+                self._extracted_folders = []
 
-                if file_path.suffix.lower() not in extensions:
-                    continue
+                self.logger.info(f"\n--- Traitement des contenus extraits (passe {extraction_pass}) ---")
 
-                self.stats["total"] += 1
-                result = self.process_file(file_path, dest_dir)
+                for folder in folders_to_process:
+                    if self._interrupted:
+                        break
 
-                if result.is_success:
-                    self.stats["success"] += 1
-                elif result.is_skipped:
-                    self.stats["skipped"] += 1
-                else:
-                    self.stats["failed"] += 1
+                    # Éviter les boucles infinies
+                    if folder in self._processed_folders:
+                        self.logger.debug(f"Dossier déjà traité, ignoré: {folder}")
+                        continue
+
+                    self._processed_folders.add(folder)
+                    self.logger.info(f"Traitement du contenu extrait: {folder.name}/")
+
+                    # Traiter ce dossier (toujours récursif pour les contenus extraits)
+                    self._process_single_directory(folder, "**/*", extensions, None)
 
         except KeyboardInterrupt:
             self.logger.warning("Interruption clavier")
@@ -341,7 +455,10 @@ class FileProcessor:
     def _print_config(self, directory: Path) -> None:
         """Affiche la configuration de traitement."""
         print("\n" + "=" * 80)
-        print("CONFIGURATION")
+        if self.config.dry_run:
+            print("CONFIGURATION (MODE DRY-RUN - SIMULATION)")
+        else:
+            print("CONFIGURATION")
         print("=" * 80)
         print(f"  Répertoire      : {directory}")
         print(f"  Récursif        : {'Oui' if self.config.recursive else 'Non'}")
@@ -349,6 +466,9 @@ class FileProcessor:
         print(f"  Forcer          : {'Oui' if self.config.force else 'Non'}")
         print(f"  Nommage PDF     : {'fichier.ext.pdf' if self.config.keep_extension else 'fichier.pdf'}")
         print(f"  Suppr. source   : {'Oui' if self.config.delete_source else 'Non'}")
+        print(f"  Cacher source   : {'Oui' if self.config.hide_source else 'Non'}")
+        if self.config.dry_run:
+            print(f"  Mode            : DRY-RUN (simulation)")
         print(f"  Rapport         : Oui")
         print(f"  Niveau log      : {self.config.log_level}")
 
@@ -363,7 +483,10 @@ class FileProcessor:
     def _print_summary(self, duration: float) -> None:
         """Affiche le résumé du traitement."""
         print("\n" + "=" * 80)
-        print("RÉSUMÉ")
+        if self.config.dry_run:
+            print("RÉSUMÉ (DRY-RUN - AUCUN FICHIER MODIFIÉ)")
+        else:
+            print("RÉSUMÉ")
         print("=" * 80)
 
         # Statistiques de base

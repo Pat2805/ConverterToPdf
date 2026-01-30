@@ -59,7 +59,7 @@ class MsgConverter(BaseConverter):
     3. Convertir le message en PDF (HTML ou texte)
 
     Structure de sortie (avec pièces jointes):
-        message.msg.pdf/
+        message.msg-open/
         ├── _message.pdf          # Le corps du message
         ├── document.docx.pdf     # Pièce jointe convertie
         ├── image.jpg             # Pièce jointe non convertible (conservée)
@@ -80,18 +80,24 @@ class MsgConverter(BaseConverter):
         ".htm", ".html",
         ".xml",
         ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp",
+        # Archives (pièces jointes compressées)
+        ".zip", ".rar", ".7z",
+        ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2",
     }
 
     # Extensions d'images (pour filtrage des petites images)
     IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff", ".tif", ".webp"}
 
     # Seuils pour détecter les images insignifiantes
-    MIN_IMAGE_SIZE_BYTES = 10 * 1024  # 10 KB minimum
-    MIN_IMAGE_DIMENSION = 100  # 100 pixels minimum (largeur ou hauteur)
+    # Images en dessous de ces seuils avec nom suspect sont filtrées
+    MIN_IMAGE_SIZE_BYTES = 30 * 1024  # 30 KB
+    MIN_IMAGE_DIMENSION = 200  # 200 pixels (largeur ET hauteur)
 
-    # Seuils plus stricts pour les images "très petites" (filtrées même sans nom suspect)
-    VERY_SMALL_SIZE_BYTES = 5 * 1024  # 5 KB
-    VERY_SMALL_DIMENSION = 50  # 50 pixels
+    # Seuils absolus : images TOUJOURS filtrées (trop petites pour être utiles)
+    # Même sans nom suspect, ces images sont des icônes/logos/trackers
+    ALWAYS_FILTER_SIZE_BYTES = 15 * 1024  # 15 KB
+    ALWAYS_FILTER_DIMENSION = 150  # 150 pixels
+    ALWAYS_FILTER_SURFACE = 25000  # ~158x158 pixels (permet 250x100 mais pas 100x100)
 
     # Patterns de noms de fichiers à ignorer (logos, signatures, tracking pixels)
     # NOTE: Ces patterns ne filtrent que si l'image est PETITE
@@ -207,59 +213,58 @@ class MsgConverter(BaseConverter):
             return False, ""
 
         name_without_ext = Path(filename).stem.lower()
-        is_small_size = len(data) < self.MIN_IMAGE_SIZE_BYTES
-        is_very_small_size = len(data) < self.VERY_SMALL_SIZE_BYTES
-        is_small_dimensions = False
-        is_very_small_dimensions = False
-        is_separator_shape = False
-        width, height = 0, 0
+        file_size = len(data)
+        width, height, surface = 0, 0, 0
 
         # Vérifier les dimensions de l'image (si PIL disponible)
         if PIL_AVAILABLE:
             try:
                 img = Image.open(io.BytesIO(data))
                 width, height = img.size
+                surface = width * height
                 img.close()
-
-                # Images petites en dimensions
-                if width < self.MIN_IMAGE_DIMENSION and height < self.MIN_IMAGE_DIMENSION:
-                    is_small_dimensions = True
-
-                # Images très petites en dimensions
-                if width < self.VERY_SMALL_DIMENSION and height < self.VERY_SMALL_DIMENSION:
-                    is_very_small_dimensions = True
-
-                # Images très allongées (séparateurs) - filtrées seulement si très fines
-                aspect_ratio = max(width, height) / max(min(width, height), 1)
-                if aspect_ratio > 10 and min(width, height) < 20:
-                    is_separator_shape = True
-
             except Exception:
                 pass
 
+        def size_info() -> str:
+            if width and height:
+                return f"{width}x{height}, {file_size // 1024}KB"
+            return f"{file_size // 1024}KB"
+
         # 1. Filtrer les images de forme séparateur (ligne de 1-20px de haut/large)
-        if is_separator_shape:
-            return True, f"forme de séparateur ({width}x{height})"
+        if width and height:
+            aspect_ratio = max(width, height) / max(min(width, height), 1)
+            if aspect_ratio > 10 and min(width, height) < 20:
+                return True, f"séparateur ({size_info()})"
 
-        # 2. Filtrer les images TRÈS petites (< 5KB ET < 50x50) - probablement des icônes/pixels
-        if is_very_small_size and is_very_small_dimensions:
-            size_info = f"{width}x{height}, {len(data)} octets" if width and height else f"{len(data)} octets"
-            return True, f"image très petite ({size_info})"
+        # 2. Filtrer les images TOUJOURS trop petites pour être utiles
+        #    Critères : taille fichier < 15KB ET (dimensions < 150x150 OU surface < 25000px²)
+        is_tiny_file = file_size < self.ALWAYS_FILTER_SIZE_BYTES
+        is_tiny_dimensions = width > 0 and height > 0 and (
+            (width < self.ALWAYS_FILTER_DIMENSION and height < self.ALWAYS_FILTER_DIMENSION)
+            or surface < self.ALWAYS_FILTER_SURFACE
+        )
 
-        # 3. Pour les noms suspects, l'image doit être petite (< 10KB ou < 100x100)
-        is_small = is_small_size or is_small_dimensions
+        if is_tiny_file and is_tiny_dimensions:
+            return True, f"image trop petite ({size_info()})"
+
+        # Si pas de dimensions disponibles mais fichier très petit, filtrer aussi
+        if not width and not height and file_size < self.ALWAYS_FILTER_SIZE_BYTES:
+            return True, f"fichier trop petit ({size_info()})"
+
+        # 3. Pour les noms suspects, seuils plus permissifs (< 30KB ou < 200x200)
+        is_small_file = file_size < self.MIN_IMAGE_SIZE_BYTES
+        is_small_dimensions = width > 0 and height > 0 and (
+            width < self.MIN_IMAGE_DIMENSION and height < self.MIN_IMAGE_DIMENSION
+        )
+        is_small = is_small_file or is_small_dimensions
 
         if is_small:
             for pattern in self.INSIGNIFICANT_IMAGE_PATTERNS:
                 if re.search(pattern, name_without_ext, re.IGNORECASE):
-                    size_info = f"{len(data)} octets"
-                    if width and height:
-                        size_info = f"{width}x{height}, {len(data)} octets"
-                    return True, f"petite image avec nom suspect ({size_info})"
+                    return True, f"nom suspect + petite ({size_info()})"
 
-        # Les images inline (CID) ne sont PAS filtrées automatiquement
-        # car elles peuvent être des photos légitimes dans le corps du mail
-
+        # Les images plus grandes sont conservées
         return False, ""
 
     def convert(self, source: Path, dest: Path) -> ConversionResult:
@@ -282,9 +287,23 @@ class MsgConverter(BaseConverter):
                 message="extract_msg non installé",
             )
 
+        msg = None
         try:
             self.logger.debug("Ouverture MSG avec extract_msg")
-            msg = extract_msg.Message(str(source))
+            try:
+                msg = extract_msg.Message(str(source))
+            except TypeError as e:
+                # Erreur courante avec certains MSG malformés
+                self.logger.debug(f"Erreur ouverture MSG (TypeError): {e}")
+                return ConversionResult(
+                    status=ConversionStatus.FAILED,
+                    source=source,
+                    dest=None,
+                    duration=time.time() - start,
+                    method=self.name,
+                    message=f"Fichier MSG malformé: {e}",
+                    exception=e,
+                )
 
             try:
                 if hasattr(msg, "process"):
@@ -296,7 +315,26 @@ class MsgConverter(BaseConverter):
             subject = getattr(msg, "subject", "") or ""
             sender = getattr(msg, "sender", "") or ""
             to = getattr(msg, "to", "") or ""
-            date = getattr(msg, "date", "") or ""
+
+            # Date peut être un datetime, un int (timestamp) ou une string
+            raw_date = getattr(msg, "date", None)
+            if raw_date is None:
+                date = ""
+            elif isinstance(raw_date, str):
+                date = raw_date
+            elif hasattr(raw_date, "strftime"):
+                # C'est un datetime
+                date = raw_date.strftime("%Y-%m-%d %H:%M:%S")
+            elif isinstance(raw_date, (int, float)):
+                # C'est un timestamp
+                from datetime import datetime
+                try:
+                    date = datetime.fromtimestamp(raw_date).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, OSError):
+                    date = str(raw_date)
+            else:
+                date = str(raw_date)
+
             body = getattr(msg, "body", "") or ""
 
             # Corps HTML
@@ -345,17 +383,8 @@ class MsgConverter(BaseConverter):
                 import traceback
                 self.logger.debug(traceback.format_exc())
 
-            # Fermer le message après extraction
-            def close_msg():
-                try:
-                    if hasattr(msg, "close"):
-                        msg.close()
-                except Exception:
-                    pass
-
             # Si pas de pièces jointes, conversion simple
             if not attachments:
-                close_msg()
                 return self._convert_message_only(
                     source, dest, start,
                     subject, sender, to, date, body, html_body, []
@@ -364,9 +393,22 @@ class MsgConverter(BaseConverter):
             # Avec pièces jointes: créer un dossier
             self.logger.debug(f"  {len(attachments)} pièce(s) jointe(s) brute(s)")
 
-            # Le dossier porte le nom du fichier source (sans .pdf)
-            # Ex: message.msg -> message.msg/ (pas message.msg.pdf/)
-            output_folder = dest.parent / source.name
+            # Le dossier porte le nom du fichier source + "-open"
+            # Ex: message.msg -> message.msg-open/ (évite le conflit avec le fichier source)
+            output_folder = dest.parent / f"{source.name}-open"
+
+            # Vérifier si le dossier existe déjà (skip sauf si force)
+            if output_folder.exists() and not self.config.force:
+                self.logger.info(f"  Dossier déjà existant: {output_folder.name}/ (utiliser --force)")
+                return ConversionResult(
+                    status=ConversionStatus.SKIPPED_EXISTS,
+                    source=source,
+                    dest=output_folder,
+                    duration=time.time() - start,
+                    method=self.name,
+                    message="Dossier de sortie déjà existant",
+                )
+
             output_folder.mkdir(parents=True, exist_ok=True)
 
             # Extraire et convertir les pièces jointes (avec filtrage des petites images)
@@ -377,8 +419,6 @@ class MsgConverter(BaseConverter):
             # Log du nombre de pièces jointes retenues
             if attachment_results:
                 self.logger.info(f"  {len(attachment_results)} pièce(s) jointe(s) retenue(s)")
-
-            close_msg()
 
             # Créer la liste des pièces jointes pour le PDF du message
             attachments_info = []
@@ -423,6 +463,15 @@ class MsgConverter(BaseConverter):
                 method=self.name,
                 exception=e,
             )
+
+        finally:
+            # TOUJOURS fermer le fichier MSG pour libérer les handles
+            if msg is not None:
+                try:
+                    if hasattr(msg, "close"):
+                        msg.close()
+                except Exception:
+                    pass
 
     def _process_attachments(
         self,
@@ -506,29 +555,31 @@ class MsgConverter(BaseConverter):
                         if not converter.is_available():
                             continue
 
-                        self.logger.debug(f"  Conversion pièce jointe: {filename}")
+                        self.logger.info(f"    [CONV] {filename}")
                         conv_result = converter.convert(temp_path, pdf_dest)
 
                         if conv_result.status == ConversionStatus.SUCCESS:
-                            self.logger.debug(f"  -> Converti: {pdf_dest.name}")
+                            self.logger.info(f"      -> OK [{converter.name}]")
                             # Supprimer le fichier original uniquement si delete_source est activé
                             if self.config.delete_source:
                                 try:
                                     temp_path.unlink()
-                                    self.logger.debug(f"  -> Original supprimé: {safe_name}")
+                                    self.logger.debug(f"      -> Original supprimé")
                                 except Exception:
                                     pass
                             results.append((filename, pdf_dest, True))
                             converted = True
                             break
+                        else:
+                            self.logger.debug(f"      -> Échec [{converter.name}]")
 
                     if not converted:
                         # Garder le fichier original
-                        self.logger.debug(f"  -> Non converti: {filename}")
+                        self.logger.warning(f"    [ÉCHEC] {filename} (conservé)")
                         results.append((filename, temp_path, False))
                 else:
                     # Extension non convertible, garder tel quel
-                    self.logger.debug(f"  -> Conservé: {filename}")
+                    self.logger.info(f"    [KEEP] {filename}")
                     results.append((filename, temp_path, False))
 
             except Exception as e:
@@ -727,8 +778,13 @@ class MsgConverter(BaseConverter):
 
         return '\n'.join(wrapped_lines)
 
-    def _escape_xml(self, text: str) -> str:
+    def _escape_xml(self, text) -> str:
         """Échappe les caractères spéciaux XML pour ReportLab."""
+        if text is None:
+            return ""
+        # Convertir en string si nécessaire (date peut être un datetime ou int)
+        if not isinstance(text, str):
+            text = str(text)
         if not text:
             return ""
         return (

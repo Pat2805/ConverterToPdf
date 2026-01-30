@@ -7,6 +7,7 @@ avec statistiques détaillées, erreurs et fichiers problématiques.
 
 from __future__ import annotations
 
+import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -101,11 +102,20 @@ class SessionReport:
             self.conversions.append((result.source, dest_path, result.method, result.duration))
         elif status == "failed":
             stats.failed += 1
-            # Collecter les détails de l'erreur
+            # Collecter les détails de l'erreur avec traceback complet
             error_msg = result.message or "Erreur inconnue"
             error_details = ""
             if result.exception:
-                error_details = str(result.exception)
+                # Inclure le type d'exception et la traceback complète
+                exc_type = type(result.exception).__name__
+                exc_msg = str(result.exception)
+                # Obtenir la traceback si disponible
+                tb_str = "".join(traceback.format_exception(
+                    type(result.exception),
+                    result.exception,
+                    result.exception.__traceback__
+                ))
+                error_details = f"{exc_type}: {exc_msg}\n{tb_str}"
             self.errors.append((result.source, error_msg, error_details))
         elif status == "skipped_exists":
             stats.skipped_exists += 1
@@ -287,11 +297,10 @@ class SessionReport:
                 lines.append(f"      Chemin  : {path}")
                 lines.append(f"      Raison  : {reason}")
                 if details:
-                    # Tronquer les détails si trop longs
-                    details_short = details[:200] + "..." if len(details) > 200 else details
-                    # Remplacer les sauts de ligne
-                    details_short = details_short.replace("\n", " | ")
-                    lines.append(f"      Détails : {details_short}")
+                    # Afficher la traceback complète avec indentation
+                    lines.append("      Détails :")
+                    for detail_line in details.strip().split("\n"):
+                        lines.append(f"        {detail_line}")
                 lines.append("")
 
         # Fichiers protégés par mot de passe

@@ -68,6 +68,16 @@ Exemples:
         action="store_true",
         help="Supprimer les fichiers sources après conversion",
     )
+    general.add_argument(
+        "-H", "--hide",
+        action="store_true",
+        help="Rendre les fichiers sources cachés après conversion (Windows)",
+    )
+    general.add_argument(
+        "-n", "--dry-run",
+        action="store_true",
+        help="Simuler les conversions sans les exécuter",
+    )
 
     # Méthode de conversion
     method = parser.add_argument_group("Méthode de conversion")
