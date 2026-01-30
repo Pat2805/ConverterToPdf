@@ -1,0 +1,10 @@
+# Development dependencies for ConverterToPdf
+# Install with: pip install -r requirements-dev.txt
+
+# Testing
+pytest>=8.0.0
+pytest-cov>=4.0.0
+
+# Code quality (optional)
+# ruff>=0.1.0
+# mypy>=1.0.0

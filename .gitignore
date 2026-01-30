@@ -45,3 +45,17 @@ conversion_log_*.csv
 .DS_Store
 Thumbs.db
 desktop.ini
+nul
+
+# Claude Code
+.claude/
+
+# Test coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# Session reports (generated during conversion)
+conversion_report_*.txt
