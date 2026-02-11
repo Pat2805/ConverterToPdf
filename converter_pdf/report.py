@@ -303,6 +303,24 @@ class SessionReport:
                         lines.append(f"        {detail_line}")
                 lines.append("")
 
+        # Fichiers déjà convertis (PDF existant)
+        if self.skipped_existing:
+            lines.append("FICHIERS DÉJÀ CONVERTIS (PDF existant)")
+            lines.append(sep_light)
+            for path in self.skipped_existing:
+                # Afficher le chemin relatif si possible
+                try:
+                    if self.source_directory and path.is_relative_to(self.source_directory):
+                        rel_path = path.relative_to(self.source_directory)
+                    else:
+                        rel_path = path.name
+                except ValueError:
+                    rel_path = path.name
+                lines.append(f"  - {rel_path}")
+            lines.append("")
+            lines.append(f"  [i] Utilisez --force pour reconvertir ces fichiers")
+            lines.append("")
+
         # Fichiers protégés par mot de passe
         if self.password_protected:
             lines.append("FICHIERS PROTÉGÉS PAR MOT DE PASSE")
