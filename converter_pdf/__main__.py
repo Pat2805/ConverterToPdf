@@ -22,6 +22,20 @@ def main() -> int:
     """
     args = parse_args()
 
+    # Mode GUI
+    if getattr(args, 'gui', False):
+        try:
+            from .gui import launch_gui
+            launch_gui()
+            return 0
+        except ImportError:
+            print(
+                "Erreur: customtkinter requis pour la GUI.\n"
+                "Installez-le avec: pip install customtkinter",
+                file=sys.stderr,
+            )
+            return 1
+
     # Mode vérification
     if args.check:
         print_check_info()

@@ -170,6 +170,14 @@ Exemples:
         help="Vérifier la configuration et les outils disponibles",
     )
 
+    # Interface graphique
+    gui_group = parser.add_argument_group("Interface graphique")
+    gui_group.add_argument(
+        "--gui",
+        action="store_true",
+        help="Lancer l'interface graphique",
+    )
+
     # Version
     parser.add_argument(
         "--version",

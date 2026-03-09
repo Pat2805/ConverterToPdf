@@ -329,3 +329,12 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "requires_reportlab: marks tests that require ReportLab"
     )
+    config.addinivalue_line(
+        "markers", "gui: marks tests related to GUI components"
+    )
+    config.addinivalue_line(
+        "markers", "requires_display: marks tests that require a display/screen"
+    )
+    config.addinivalue_line(
+        "markers", "threading: marks tests that use threading"
+    )
